@@ -29,7 +29,9 @@
 - Keyboard and screen-reader audit.
 - Extension Host tests for command/provider registration.
 - VSIX size review; evaluate external CLI versus bundled SDK CLI packaging.
-- Optional model/provider diagnostics surfaced from Qwen without owning provider configuration.
+- Compact active-model selector plus native select/add/edit/open flows for Qwen-owned provider configuration.
+- Authenticated OpenAI-compatible `/models` diagnostics and remote LM Studio setup.
+- Conflict-safe user settings and `.env` writes with workspace-override warnings.
 
 ## Future, not MVP
 
@@ -38,3 +40,4 @@
 - Multi-root session selection and multiple concurrent sessions.
 - Persisted transcript summaries and reconnection replay.
 - Optional real-Qwen/LM Studio end-to-end suite, separate from normal tests.
+- Optional model removal after a safe credential-reference policy is defined; model refresh currently occurs on view readiness and picker actions rather than through a file watcher.

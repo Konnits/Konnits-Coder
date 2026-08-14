@@ -67,6 +67,25 @@ The installed CLI source calls `loadEnvironment(settings.merged)`. That function
 
 The installed schema and the official [Qwen settings reference](https://github.com/QwenLM/qwen-code/blob/main/docs/users/configuration/settings.md) define `maxRetries` and `contextWindowSize` as direct `generationConfig` fields. The official [model provider reference](https://github.com/QwenLM/qwen-code/blob/main/docs/users/configuration/model-providers.md) reserves `extra_body` for additional OpenAI-compatible request-body parameters. The user's configuration was migrated accordingly: `enable_thinking` remains in `extra_body`, while `maxRetries` and `contextWindowSize` are siblings of it. This placement issue did not cause the session exit, but leaving it unchanged would send Qwen client controls to LM Studio as arbitrary body fields instead of applying them inside Qwen.
 
+### Model management and settings precedence
+
+The bundled CLI source, schema, declarations, and `/model` implementation were inspected before implementing model management:
+
+- `Storage.getGlobalQwenDir()` resolves non-empty `QWEN_HOME` first, otherwise the platform home plus `.qwen`; user settings are `settings.json` in that directory.
+- Bundled CLI 0.19.10 uses settings version 4 and defines `modelProviders` as a replace-merged object whose values are model arrays keyed by auth type. Its OpenAI-compatible entry fields include `id`, optional `name`, `baseUrl`, `envKey`, and `generationConfig`.
+- `/model` persists `model.name`, `model.baseUrl`, and `security.auth.selectedType`. Within one auth type, `id + baseUrl` is the effective identity, so the same model ID can safely appear at multiple endpoints.
+- Trusted workspace `.qwen/settings.json` replaces user `modelProviders` when it owns that property. Konnits-Coder detects this scope and refuses automatic project writes, offering to open the workspace file instead.
+- The installed environment loader supports the global Qwen `.env` path and resolves process environment before `.env`, with `settings.env` as a lower-priority legacy fallback. New Konnits-Coder credentials therefore use `.env`; existing sources are detected without migration.
+- Reasoning is represented as `false` or an effort object, while `contextWindowSize` is a direct `generationConfig` field. Edits preserve every unknown provider and generation field.
+
+The current official [model-provider documentation](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/) now describes a newer `{ protocol, models }` provider container. That shape does not match the repository's pinned SDK-bundled CLI, whose running schema and `/model` code still require arrays. The extension deliberately targets the installed runtime and fails closed if `modelProviders.openai` has a non-array shape; upgrading the SDK requires reviewing this adapter and its tests.
+
+There is no public SDK settings mutation API appropriate for the direct-query integration. Deep-importing CLI configuration internals would couple the extension to generated private chunks. `QwenSettingsService` therefore performs a narrow read/modify/write of Qwen's file: invalid JSON is never overwritten, unrelated values and unknown model fields survive, the initial file is backed up once, concurrent changes are detected from the exact loaded contents, and a same-directory temporary file is renamed over the target.
+
+Endpoint discovery follows the OpenAI-compatible contract with a bounded `GET <baseUrl>/models` and optional bearer token. It validates connectivity, authentication, response shape, discovered IDs, and a requested-ID mismatch. This request is diagnostic only. All chat and tool traffic continues through `QwenCodeAgentClient` and Qwen Code.
+
+The public SDK exposes `Query.setModel`, but changing a live query would retain model-specific conversation state and creates unclear provider reload behavior. Konnits-Coder disables switching during active work, persists the Qwen selection, then creates a new session. This makes the next SDK query load the selected provider and clears stale context metrics and transcript state.
+
 The official [filesystem tool reference](https://qwenlm.github.io/qwen-code-docs/en/developers/tools/file-system/) confirms dedicated edit tools and their path fields: `edit.file_path`, `write_file.file_path`, and `notebook_edit.file_path`. The official [shell reference](https://qwenlm.github.io/qwen-code-docs/en/developers/tools/shell/) identifies `run_shell_command` input and warns that command-pattern restrictions are not a security boundary.
 
 Qwen's own prompt asks the agent to use dedicated filesystem tools rather than shell redirection for edits. This makes exact target snapshotting useful, but not infallible: an approved shell command can still mutate arbitrary files.
@@ -102,6 +121,6 @@ This cannot safely reconstruct arbitrary files changed by shell commands. Such c
 ## Compatibility conclusions
 
 - No private Copilot API is necessary.
-- No direct LM Studio API belongs in this extension.
+- No direct prompt or tool path to LM Studio belongs in this extension; the explicit model-list connectivity probe is the only provider call.
 - Only settings with implemented behavior are contributed.
 - Normal tests require neither Qwen Code execution nor a model provider.

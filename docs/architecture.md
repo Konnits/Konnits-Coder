@@ -6,12 +6,13 @@
 React webview / VS Code commands
               ↓ typed messages
         ChatController
-        ↙           ↘
- AgentClient       ChangeManager
-      ↓                 ↓
-QwenCodeAgentClient  FileSystemPort
-      ↓                 ↓
-@qwen-code/sdk       VS Code APIs
+   ↙          ↓             ↘
+AgentClient  ModelManagement  ChangeManager
+    ↓          ↓       ↓          ↓
+QwenCode   Qwen settings  /models  FileSystemPort
+AgentClient   + .env     probe         ↓
+    ↓                              VS Code APIs
+@qwen-code/sdk
       ↓
 Qwen Code → configured provider
 ```
@@ -25,6 +26,9 @@ The domain and application layers never expose Qwen SDK messages to the webview.
 - `QwenEventAdapter`: converts streaming deltas, assistant blocks, tool calls/results, and result messages to domain events.
 - `QwenSessionManager`: persists only the workspace session identifier; chat bodies and file content are not persisted.
 - `ChatController`: application state machine, typed webview message dispatch, permissions, and coordination of agent events with change tracking.
+- `ModelManagementController`: native VS Code quick-pick/input flows for selecting, adding, editing, testing, and opening Qwen model configuration. Credential entry is a native password input and never enters webview state.
+- `QwenSettingsService`: parses and enumerates the installed Qwen settings schema, preserves unknown fields, detects workspace overrides and concurrent edits, creates a one-time backup, and atomically replaces user settings and `.env` files.
+- `OpenAICompatibleEndpointProbe`: bounded, explicit `GET <baseUrl>/models` diagnostics with optional bearer authentication. It is not used for prompts or tools.
 - `PermissionManager`: stores pending approval promises and resolves or denies them, including cancellation cleanup.
 - `ChangeManager`: maintains original/proposed content, hashes, counts, and state transitions independently of VS Code.
 - `VsCodeFileSystem`: implements file reads, writes, deletes, dirty-document checks, and workspace-boundary validation.
@@ -41,6 +45,14 @@ The domain and application layers never expose Qwen SDK messages to the webview.
 5. When the tool completes, tracked targets are read again and become pending `ProposedFileChange` records.
 6. The controller publishes a serializable view state. React only renders that state and sends user intentions.
 7. Review opens two virtual documents in `vscode.diff`. Accept keeps the working-tree result after verification. Reject restores the base only after verification.
+
+### Model selection flow
+
+1. The webview renders only a secret-free active-model summary and sends `manageModels` when the header control is activated.
+2. `ChatController` blocks the operation while an agent run or permission decision is active.
+3. Native VS Code controls collect the selection and any provider details. The settings service writes Qwen's own user configuration, never a parallel application configuration.
+4. A switch persists the provider auth type, model ID, and normalized base URL as one selection. The base URL disambiguates identical model IDs at different endpoints.
+5. `ChatController` creates a fresh Qwen session and clears timeline/context state. The next normal prompt creates a new SDK query, which reloads Qwen's provider configuration.
 
 ### Turn finality
 
@@ -68,7 +80,9 @@ The application state explicitly distinguishes `idle`, `connecting`, `connected`
 - SDK stderr is sent to a dedicated output channel and never includes environment dumps. Debug output is opt-in.
 - File targets are canonical workspace URIs and must remain inside an open workspace folder.
 - Permission requests default to denial on timeout, cancellation, disposal, or malformed input.
+- API tokens are accepted only by a native password input, stored in Qwen's `.env` through a generated `envKey`, and excluded from webview contracts and diagnostics.
+- Invalid JSON, project overrides, and concurrent settings or `.env` changes stop the write. Existing files receive a one-time `.konnits-backup`, and replacements use a same-directory temporary file plus rename.
 
 ## Qwen/provider boundary
 
-The extension supplies only working directory, optional executable path, session ID, permissions, and streaming configuration. Authentication, base URL, model/provider selection (including LM Studio), tools, context, and reasoning remain Qwen Code responsibilities. Context capacity is reported by Qwen Code and is never hardcoded or queried directly from the model provider.
+Qwen remains the owner and runtime consumer of authentication, base URL, model/provider selection (including LM Studio), tools, context, and reasoning. Konnits-Coder provides a safe editor for that Qwen-owned configuration. It never sends a normal prompt directly to a provider. The only direct provider request is the user-initiated OpenAI-compatible model-list probe. Context capacity is reported by Qwen Code and is never inferred from that probe.
