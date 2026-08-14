@@ -7,6 +7,10 @@
   "type": "module",
   "publisher": "konnits",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Konnits/Konnits-Coder.git"
+  },
   "engines": {
     "vscode": "^1.125.0",
     "node": ">=22.0.0"
