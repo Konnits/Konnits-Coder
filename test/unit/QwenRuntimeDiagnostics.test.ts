@@ -84,4 +84,30 @@ describe("Qwen settings diagnostics", () => {
     expect(output).not.toContain("process-secret");
     expect(output).not.toContain("settings-secret");
   });
+
+  it("detects and protects a credential stored in Qwen's .env file", () => {
+    const withoutSettingsSecret = {
+      ...settings,
+      env: {},
+    };
+    const summary = summarizeQwenSettings(
+      withoutSettingsSecret,
+      "C:\\Users\\test\\.qwen\\settings.json",
+      {},
+      'LMSTUDIO_API_KEY="dotenv-secret"\n',
+    );
+
+    expect(summary.credentialConfigured).toBe(true);
+    expect(summary.credentialSource).toBe(".env");
+    expect(summary.secrets).toContain("dotenv-secret");
+    expect(
+      formatQwenRuntimeDiagnostics({
+        ...summary,
+        sdkVersion: "0.1.8",
+        cliSource: "bundled",
+        cliExecutable: "cli.js",
+        cliVersion: "0.19.10",
+      }).join("\n"),
+    ).not.toContain("dotenv-secret");
+  });
 });

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
 
@@ -25,7 +25,7 @@ export interface QwenSettingsSummary {
   readonly model?: string;
   readonly baseUrl?: string;
   readonly credentialConfigured: boolean;
-  readonly credentialSource?: "process environment" | "settings.env";
+  readonly credentialSource?: "process environment" | ".env" | "settings.env";
   readonly secrets: readonly string[];
   readonly warnings: readonly string[];
 }
@@ -54,6 +54,7 @@ export function summarizeQwenSettings(
   value: unknown,
   settingsPath: string,
   environment: Readonly<Record<string, string | undefined>>,
+  environmentFile = "",
 ): QwenSettingsSummary {
   const settings = asRecord(value);
   const security = asRecord(settings?.security);
@@ -80,8 +81,10 @@ export function summarizeQwenSettings(
     : undefined;
   const envKey = readString(matchingModel?.envKey);
   const settingsEnv = asRecord(settings?.env);
+  const dotEnv = parseDotEnv(environmentFile);
   const processCredential =
     envKey === undefined ? undefined : environment[envKey];
+  const dotEnvCredential = envKey === undefined ? undefined : dotEnv[envKey];
   const settingsCredential =
     envKey === undefined ? undefined : readString(settingsEnv?.[envKey]);
   const baseUrl = readString(matchingModel?.baseUrl) ?? selectedBaseUrl;
@@ -89,6 +92,7 @@ export function summarizeQwenSettings(
     (candidate): candidate is string =>
       typeof candidate === "string" && candidate.length > 0,
   );
+  secrets.push(...Object.values(dotEnv));
   if (processCredential !== undefined && processCredential.length > 0) {
     secrets.push(processCredential);
   }
@@ -100,12 +104,15 @@ export function summarizeQwenSettings(
     ...(baseUrl === undefined ? {} : { baseUrl }),
     credentialConfigured:
       (processCredential !== undefined && processCredential.length > 0) ||
+      dotEnvCredential !== undefined ||
       settingsCredential !== undefined,
     ...(processCredential !== undefined && processCredential.length > 0
       ? { credentialSource: "process environment" as const }
-      : settingsCredential === undefined
-        ? {}
-        : { credentialSource: "settings.env" as const }),
+      : dotEnvCredential !== undefined
+        ? { credentialSource: ".env" as const }
+        : settingsCredential === undefined
+          ? {}
+          : { credentialSource: "settings.env" as const }),
     secrets,
     warnings: generationConfigurationWarnings(matchingModel),
   };
@@ -120,20 +127,27 @@ export async function inspectQwenRuntime(
   const sdkPackage = asRecord(
     JSON.parse(await readFile(sdkPackagePath, "utf8")) as unknown,
   );
-  const settingsPath = join(
-    process.env.QWEN_HOME ?? join(homedir(), ".qwen"),
-    "settings.json",
-  );
+  const qwenDirectory = process.env.QWEN_HOME
+    ? resolve(process.env.QWEN_HOME)
+    : join(homedir(), ".qwen");
+  const settingsPath = join(qwenDirectory, "settings.json");
   let settings: unknown = {};
   try {
     settings = JSON.parse(await readFile(settingsPath, "utf8")) as unknown;
   } catch {
     // Qwen will provide the actionable parse/not-found error when it launches.
   }
+  let environmentFile = "";
+  try {
+    environmentFile = await readFile(join(qwenDirectory, ".env"), "utf8");
+  } catch {
+    // A Qwen .env file is optional.
+  }
   const settingsSummary = summarizeQwenSettings(
     settings,
     settingsPath,
     process.env,
+    environmentFile,
   );
 
   return {
@@ -209,4 +223,35 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function parseDotEnv(value: string): Readonly<Record<string, string>> {
+  const parsed: Record<string, string> = {};
+  for (const line of value.split(/\r?\n/u)) {
+    const match =
+      /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/u.exec(line);
+    const key = match?.[1];
+    const rawValue = match?.[2];
+    if (key === undefined || rawValue === undefined) {
+      continue;
+    }
+    parsed[key] = parseDotEnvValue(rawValue);
+  }
+  return parsed;
+}
+
+function parseDotEnvValue(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      return typeof parsed === "string" ? parsed : trimmed;
+    } catch {
+      return trimmed.slice(1, -1);
+    }
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
 }
