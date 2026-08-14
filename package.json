@@ -37,7 +37,8 @@
     "diagnose:qwen": "node scripts/qwen-smoke.mjs",
     "diagnose:qwen:electron": "node scripts/run-qwen-electron-smoke.mjs",
     "diagnose:qwen:missing-session": "node scripts/qwen-smoke.mjs --resume-missing",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build",
+    "package:vsix": "vsce package"
   },
   "dependencies": {
     "@qwen-code/sdk": "0.1.8",
