@@ -21,6 +21,9 @@ describe("webview message validation", () => {
       prompt: "hello",
     });
     expect(parseWebviewMessage({ type: "acceptFile", id: 42 })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "manageModels" })).toEqual({
+      type: "manageModels",
+    });
     expect(
       parseWebviewMessage({
         type: "openExternal",

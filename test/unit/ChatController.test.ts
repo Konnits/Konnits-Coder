@@ -9,6 +9,7 @@ import type { ChangeManager } from "../../src/changes/ChangeManager.js";
 import type { DiffContentProvider } from "../../src/changes/DiffContentProvider.js";
 import type { VsCodeFileSystem } from "../../src/changes/VsCodeFileSystem.js";
 import type { Logger } from "../../src/logging/Logger.js";
+import type { ModelManagement } from "../../src/models/ModelTypes.js";
 import type { PermissionManager } from "../../src/permissions/PermissionManager.js";
 import type { QwenSessionManager } from "../../src/qwen/QwenSessionManager.js";
 
@@ -26,6 +27,7 @@ vi.mock("vscode", () => ({
   env: { openExternal: vi.fn(async () => true) },
   window: {
     showErrorMessage: vi.fn(async () => undefined),
+    showInformationMessage: vi.fn(async () => undefined),
     showWarningMessage: vi.fn(async () => undefined),
   },
 }));
@@ -225,9 +227,61 @@ describe("ChatController terminal states", () => {
     );
     expect(failing.controller.getState().status).not.toBe("failed");
   });
+
+  it("refreshes the secret-free model summary when the webview becomes ready", async () => {
+    const models = fakeModelManagement({ modelChanged: false });
+    const { controller } = await createController(undefined, models);
+
+    controller.handleMessage({ type: "ready" });
+    await vi.waitFor(() =>
+      expect(controller.getState().model.label).toBe("Computer B"),
+    );
+    expect(models.loadState).toHaveBeenCalledOnce();
+  });
+
+  it("prevents model changes while Qwen is busy", async () => {
+    const vscode = await import("vscode");
+    const models = fakeModelManagement({ modelChanged: true });
+    const { controller, agent } = await createController(undefined, models);
+    agent.emit(startedEvent());
+
+    await controller.manageModels();
+
+    expect(models.showPicker).not.toHaveBeenCalled();
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      "Cancel the active Qwen operation before changing models.",
+    );
+  });
+
+  it("starts a clean session and clears stale context after a model switch", async () => {
+    const models = fakeModelManagement({ modelChanged: true });
+    const { controller, agent } = await createController(undefined, models);
+    agent.emit(startedEvent());
+    agent.emit(contextEvent("session-1", 42_731));
+    agent.emit(messageStarted("old-response"));
+    agent.emit(messageChunk("old-response", "old context"));
+    agent.emit({
+      type: "agent.cancelled",
+      runId: "run-1",
+      timestamp: Date.now(),
+    });
+
+    await controller.manageModels();
+
+    expect(controller.getState()).toMatchObject({
+      sessionId: "session-2",
+      model: { label: "Computer B" },
+      timeline: [],
+    });
+    expect(controller.getState().contextUsage).toBeUndefined();
+    expect(models.showPicker).toHaveBeenCalledOnce();
+  });
 });
 
-async function createController(tokenCounter?: TokenCounter) {
+async function createController(
+  tokenCounter?: TokenCounter,
+  models?: ModelManagement,
+) {
   const { ChatController } = await import("../../src/chat/ChatController.js");
   const agent = new FakeAgentClient();
   const disposable = (): { dispose(): void } => ({ dispose: () => undefined });
@@ -255,8 +309,28 @@ async function createController(tokenCounter?: TokenCounter) {
     {} as DiffContentProvider,
     { debug: vi.fn(), error: vi.fn() } as unknown as Logger,
     tokenCounter,
+    models,
   );
   return { controller, agent };
+}
+
+function fakeModelManagement(result: {
+  readonly modelChanged: boolean;
+}): ModelManagement & {
+  readonly loadState: ReturnType<typeof vi.fn>;
+  readonly showPicker: ReturnType<typeof vi.fn>;
+} {
+  return {
+    loadState: vi.fn(async () => ({
+      label: "Computer B",
+      description: "http://computer-b:1234/v1",
+      configuredCount: 2,
+      credentialConfigured: true,
+    })),
+    showPicker: vi.fn(async () => result),
+    addModel: vi.fn(async () => result),
+    openSettings: vi.fn(async () => undefined),
+  };
 }
 
 function contextEvent(sessionId: string, usedTokens: number): AgentEvent {

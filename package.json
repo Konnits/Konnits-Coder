@@ -1,11 +1,11 @@
 {
-  "name": "qwen-frontend",
-  "displayName": "Qwen Frontend",
+  "name": "konnits-coder",
+  "displayName": "Konnits Coder",
   "description": "A review-first VS Code frontend for Qwen Code.",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "publisher": "konnits",
+  "publisher": "Konnits",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -77,6 +77,22 @@
       {
         "command": "qwenFrontend.cancel",
         "title": "Qwen Frontend: Cancel"
+      },
+      {
+        "command": "qwenFrontend.selectModel",
+        "title": "Qwen Frontend: Select Model"
+      },
+      {
+        "command": "qwenFrontend.addModel",
+        "title": "Qwen Frontend: Add OpenAI-Compatible Model"
+      },
+      {
+        "command": "qwenFrontend.manageModels",
+        "title": "Qwen Frontend: Manage Models"
+      },
+      {
+        "command": "qwenFrontend.openQwenSettings",
+        "title": "Qwen Frontend: Open Qwen Settings"
       }
     ],
     "viewsContainers": {

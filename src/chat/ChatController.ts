@@ -13,6 +13,10 @@ import type { ChangeManager } from "../changes/ChangeManager.js";
 import type { DiffContentProvider } from "../changes/DiffContentProvider.js";
 import type { VsCodeFileSystem } from "../changes/VsCodeFileSystem.js";
 import type { Logger } from "../logging/Logger.js";
+import type {
+  ModelManagement,
+  ModelSelectorViewState,
+} from "../models/ModelTypes.js";
 import type { PermissionManager } from "../permissions/PermissionManager.js";
 import type { QwenSessionManager } from "../qwen/QwenSessionManager.js";
 import {
@@ -33,6 +37,10 @@ export class ChatController implements vscode.Disposable {
   private sessionId: string | undefined;
   private contextUsage: ContextTokenUsage | undefined;
   private contextSessionId: string | undefined;
+  private modelState: ModelSelectorViewState = {
+    label: "Loading model…",
+    configuredCount: 0,
+  };
 
   constructor(
     private readonly agent: AgentClient,
@@ -43,6 +51,7 @@ export class ChatController implements vscode.Disposable {
     private readonly diff: DiffContentProvider,
     private readonly logger: Logger,
     private readonly tokenCounter: TokenCounter = new EstimatedTokenCounter(),
+    private readonly models?: ModelManagement,
   ) {
     this.disposables.push(
       this.agent.onEvent((event) => this.handleAgentEvent(event)),
@@ -62,6 +71,7 @@ export class ChatController implements vscode.Disposable {
       this.contextSessionId !== this.sessionId
         ? {}
         : { contextUsage: this.contextUsage }),
+      model: this.modelState,
       timeline: [...this.timeline],
       changes: this.changes.list().map((change) => ({
         id: change.id,
@@ -134,6 +144,47 @@ export class ChatController implements vscode.Disposable {
     this.setStatus(this.connected ? "connected" : "idle");
   }
 
+  async manageModels(): Promise<void> {
+    await this.runModelAction(() => this.models?.showPicker());
+  }
+
+  async addModel(): Promise<void> {
+    await this.runModelAction(() => this.models?.addModel());
+  }
+
+  async openModelSettings(): Promise<void> {
+    await this.models?.openSettings();
+  }
+
+  private async runModelAction(
+    action: () => Promise<{ readonly modelChanged: boolean }> | undefined,
+  ): Promise<void> {
+    if (isBusy(this.status)) {
+      await vscode.window.showWarningMessage(
+        "Cancel the active Qwen operation before changing models.",
+      );
+      return;
+    }
+    if (this.models === undefined) {
+      await vscode.window.showErrorMessage(
+        "Qwen model management is unavailable.",
+      );
+      return;
+    }
+    const pending = action();
+    if (pending === undefined) {
+      return;
+    }
+    const result = await pending;
+    await this.refreshModels();
+    if (result.modelChanged) {
+      await this.newSession();
+      await vscode.window.showInformationMessage(
+        `Switched to ${this.modelState.label}. A new Qwen session was started.`,
+      );
+    }
+  }
+
   refreshTrust(): void {
     this.emitChange();
   }
@@ -150,7 +201,7 @@ export class ChatController implements vscode.Disposable {
     try {
       switch (message.type) {
         case "ready":
-          this.emitChange();
+          await this.refreshModels();
           break;
         case "connect":
           await this.connect();
@@ -163,6 +214,15 @@ export class ChatController implements vscode.Disposable {
           break;
         case "newSession":
           await this.newSession();
+          break;
+        case "manageModels":
+          await this.manageModels();
+          break;
+        case "addModel":
+          await this.addModel();
+          break;
+        case "openModelSettings":
+          await this.openModelSettings();
           break;
         case "reviewFile":
           await this.reviewFile(message.id);
@@ -461,6 +521,24 @@ export class ChatController implements vscode.Disposable {
     for (const listener of this.listeners) {
       listener();
     }
+  }
+
+  private async refreshModels(): Promise<void> {
+    if (this.models === undefined) {
+      this.modelState = { label: "Model unavailable", configuredCount: 0 };
+      this.emitChange();
+      return;
+    }
+    try {
+      this.modelState = await this.models.loadState();
+    } catch (error) {
+      this.modelState = {
+        label: "Model settings error",
+        configuredCount: 0,
+        error: toErrorMessage(error),
+      };
+    }
+    this.emitChange();
   }
 }
 

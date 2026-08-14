@@ -17,6 +17,7 @@ import { vscode } from "./vscode.js";
 const initialState: AppState = {
   status: "idle",
   trusted: true,
+  model: { label: "Loading model…", configuredCount: 0 },
   timeline: [],
   changes: [],
   permissions: [],
@@ -112,6 +113,20 @@ export function App(): React.JSX.Element {
             aria-hidden="true"
           />
           <span>{statusLabel(state.status)}</span>
+          <button
+            className="model-selector"
+            disabled={busy}
+            title={
+              busy
+                ? "Cancel the active Qwen operation before changing models"
+                : `${state.model.label}${state.model.description === undefined ? "" : ` — ${state.model.description}`}`
+            }
+            aria-label={`Current model: ${state.model.label}. Select or manage models.`}
+            onClick={() => vscode.postMessage({ type: "manageModels" })}
+          >
+            <span aria-hidden="true">⌄</span>
+            <span>{state.model.label}</span>
+          </button>
           {state.sessionId !== undefined && (
             <span className="session" title={state.sessionId}>
               Session {state.sessionId.slice(0, 8)}
@@ -127,6 +142,19 @@ export function App(): React.JSX.Element {
         <section className="notice" role="alert">
           Qwen execution is disabled in Restricted Mode. Trust this workspace to
           use the agent.
+        </section>
+      )}
+
+      {state.model.warning !== undefined && (
+        <section className="notice model-notice" role="status">
+          {state.model.warning}
+        </section>
+      )}
+
+      {state.model.error !== undefined && (
+        <section className="error-message model-notice" role="alert">
+          <strong>Model settings</strong>
+          <p>{state.model.error}</p>
         </section>
       )}
 
@@ -258,6 +286,9 @@ function isStateMessage(value: unknown): value is ExtensionToWebviewMessage {
     typeof state.status === "string" &&
     "trusted" in state &&
     typeof state.trusted === "boolean" &&
+    "model" in state &&
+    typeof state.model === "object" &&
+    state.model !== null &&
     "timeline" in state &&
     Array.isArray(state.timeline) &&
     "changes" in state &&

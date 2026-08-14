@@ -6,6 +6,7 @@ import type {
 } from "../agent/TokenUsage.js";
 import type { FileChangeStatus } from "../changes/ProposedFileChange.js";
 import type { PermissionRisk } from "../permissions/toolRisk.js";
+import type { ModelSelectorViewState } from "../models/ModelTypes.js";
 
 export type ExecutionStatus =
   | "idle"
@@ -85,6 +86,7 @@ export interface AppState {
   readonly sessionId?: string;
   readonly workspacePath?: string;
   readonly contextUsage?: ContextTokenUsage;
+  readonly model: ModelSelectorViewState;
   readonly timeline: readonly TimelineItem[];
   readonly changes: readonly ChangeViewModel[];
   readonly permissions: readonly PermissionViewModel[];
@@ -101,6 +103,9 @@ export type WebviewToExtensionMessage =
   | { readonly type: "sendPrompt"; readonly prompt: string }
   | { readonly type: "cancel" }
   | { readonly type: "newSession" }
+  | { readonly type: "manageModels" }
+  | { readonly type: "addModel" }
+  | { readonly type: "openModelSettings" }
   | { readonly type: "reviewFile"; readonly id: string }
   | { readonly type: "acceptFile"; readonly id: string }
   | { readonly type: "rejectFile"; readonly id: string }
@@ -124,6 +129,9 @@ export function parseWebviewMessage(
     case "connect":
     case "cancel":
     case "newSession":
+    case "manageModels":
+    case "addModel":
+    case "openModelSettings":
     case "acceptAll":
     case "rejectAll":
       return { type: value.type };

@@ -7,6 +7,9 @@ import { ChatController } from "./chat/ChatController.js";
 import { ChatViewProvider } from "./chat/ChatViewProvider.js";
 import { Configuration } from "./configuration/Configuration.js";
 import { Logger } from "./logging/Logger.js";
+import { ModelManagementController } from "./models/ModelManagementController.js";
+import { OpenAICompatibleEndpointProbe } from "./models/OpenAICompatibleEndpointProbe.js";
+import { QwenSettingsService } from "./models/QwenSettingsService.js";
 import { PermissionManager } from "./permissions/PermissionManager.js";
 import { QwenCodeAgentClient } from "./qwen/QwenCodeAgentClient.js";
 import { QwenSessionManager } from "./qwen/QwenSessionManager.js";
@@ -31,6 +34,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.workspaceFolders?.[0]?.uri.toString() ?? "no-workspace";
   const sessions = new QwenSessionManager(context.workspaceState, workspaceKey);
   const diff = new DiffContentProvider(changes);
+  const modelManagement = new ModelManagementController(
+    new QwenSettingsService(),
+    new OpenAICompatibleEndpointProbe(),
+    logger,
+  );
   const controller = new ChatController(
     agent,
     sessions,
@@ -39,6 +47,8 @@ export function activate(context: vscode.ExtensionContext): void {
     fileSystem,
     diff,
     logger,
+    undefined,
+    modelManagement,
   );
   const view = new ChatViewProvider(context.extensionUri, controller);
 
@@ -62,6 +72,18 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("qwenFrontend.cancel", () =>
       controller.handleMessage({ type: "cancel" }),
+    ),
+    vscode.commands.registerCommand("qwenFrontend.selectModel", () =>
+      controller.handleMessage({ type: "manageModels" }),
+    ),
+    vscode.commands.registerCommand("qwenFrontend.addModel", () =>
+      controller.handleMessage({ type: "addModel" }),
+    ),
+    vscode.commands.registerCommand("qwenFrontend.manageModels", () =>
+      controller.handleMessage({ type: "manageModels" }),
+    ),
+    vscode.commands.registerCommand("qwenFrontend.openQwenSettings", () =>
+      controller.handleMessage({ type: "openModelSettings" }),
     ),
     vscode.workspace.onDidGrantWorkspaceTrust(() => controller.refreshTrust()),
   );
