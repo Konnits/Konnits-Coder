@@ -1,0 +1,390 @@
+import { describe, expect, it, vi } from "vitest";
+import type { Query, QueryOptions, SDKMessage } from "@qwen-code/sdk";
+import type { AgentEvent } from "../../src/agent/AgentEvent.js";
+import { PermissionManager } from "../../src/permissions/PermissionManager.js";
+import {
+  QwenCodeAgentClient,
+  resolveCliLaunch,
+  type QwenChangeTracker,
+  type QwenQueryFactory,
+} from "../../src/qwen/QwenCodeAgentClient.js";
+
+describe("QwenCodeAgentClient", () => {
+  it("keeps the exact user prompt separate from executable configuration", async () => {
+    const requests: Parameters<QwenQueryFactory>[0][] = [];
+    const queryFactory = vi.fn(((request) => {
+      requests.push(request);
+      return successfulQuery();
+    }) as QwenQueryFactory);
+    const client = createClient(queryFactory, {
+      executablePath: "C:\\qwen\\dist\\cli\\cli.js",
+    });
+
+    await client.run({
+      prompt: "Analiza el repositorio.",
+      workspacePath: "C:\\actual-workspace",
+      sessionId: "00000000-0000-4000-8000-000000000000",
+      resume: false,
+    });
+
+    expect(requests).toHaveLength(1);
+    const prompt = requests[0]?.prompt;
+    expect(typeof prompt).not.toBe("string");
+    if (typeof prompt === "string" || prompt === undefined) {
+      throw new Error("Expected a controlled SDK user-message stream.");
+    }
+    const iterator = prompt[Symbol.asyncIterator]();
+    const firstMessage = await iterator.next();
+    if (firstMessage.done) {
+      throw new Error("Expected the user prompt message.");
+    }
+    expect(firstMessage.value.message.content).toBe("Analiza el repositorio.");
+    await iterator.return?.();
+    expect(requests[0]?.options?.cwd).toBe("C:\\actual-workspace");
+    expect(requests[0]?.options?.pathToQwenExecutable).toBe(
+      "C:\\qwen\\dist\\cli\\cli.js",
+    );
+    expect(firstMessage.value.message.content).not.toBe(
+      requests[0]?.options?.pathToQwenExecutable,
+    );
+  });
+
+  it("uses the Electron bootstrap only for JavaScript CLIs on Windows", () => {
+    expect(
+      resolveCliLaunch(
+        undefined,
+        "C:\\qwen\\dist\\cli\\cli.js",
+        "win32",
+        "42.8.0",
+        "C:\\extension\\dist\\qwen-cli-launcher.mjs",
+      ),
+    ).toEqual({
+      executablePath: "C:\\extension\\dist\\qwen-cli-launcher.mjs",
+      targetPath: "C:\\qwen\\dist\\cli\\cli.js",
+    });
+    expect(
+      resolveCliLaunch("qwen", "qwen", "win32", "42.8.0", "launcher"),
+    ).toEqual({ executablePath: "qwen" });
+    expect(
+      resolveCliLaunch(undefined, "C:\\qwen\\cli.js", "win32", undefined),
+    ).toEqual({});
+  });
+
+  it("continues consuming events after a tool result until final completion", async () => {
+    const queryFactory = vi.fn((() => toolLoopQuery()) as QwenQueryFactory);
+    const client = createClient(queryFactory);
+    const events: string[] = [];
+    client.onEvent((event) => events.push(event.type));
+
+    await client.run({
+      prompt: "Read README.md and summarize it.",
+      workspacePath: "C:\\workspace",
+      sessionId: "00000000-0000-4000-8000-000000000000",
+      resume: false,
+    });
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "tool.started",
+        "tool.completed",
+        "assistant.message.chunk",
+        "assistant.message.completed",
+        "agent.completed",
+      ]),
+    );
+    expect(events.indexOf("agent.completed")).toBeGreaterThan(
+      events.indexOf("tool.completed"),
+    );
+  });
+
+  it("emits authoritative turn and current-context usage separately", async () => {
+    const queryFactory = vi.fn((() => usageQuery()) as QwenQueryFactory);
+    const client = createClient(queryFactory);
+    const events: AgentEvent[] = [];
+    client.onEvent((event) => events.push(event));
+
+    await client.run({
+      prompt: "hello",
+      workspacePath: "C:\\workspace",
+      sessionId: "session-usage",
+      resume: false,
+    });
+
+    const context = events.find(
+      (event) => event.type === "context.usage.updated",
+    );
+    expect(context?.type === "context.usage.updated" && context.sessionId).toBe(
+      "session-usage",
+    );
+    expect(
+      context?.type === "context.usage.updated" && context.usage,
+    ).toMatchObject({ usedTokens: 23_173, contextWindowTokens: 262_144 });
+    const completed = events.find((event) => event.type === "agent.completed");
+    expect(
+      completed?.type === "agent.completed" && completed.turnUsage,
+    ).toMatchObject({ inputTokens: 39_023, outputTokens: 196 });
+  });
+
+  it("does not fail a turn when context retrieval fails", async () => {
+    const queryFactory = vi.fn((() =>
+      successfulQuery(async () => {
+        throw new Error("context unavailable");
+      })) as QwenQueryFactory);
+    const client = createClient(queryFactory);
+    const events: string[] = [];
+    client.onEvent((event) => events.push(event.type));
+
+    await client.run({
+      prompt: "hello",
+      workspacePath: "C:\\workspace",
+      sessionId: "session",
+      resume: false,
+    });
+
+    expect(events).toContain("agent.completed");
+    expect(events).not.toContain("agent.failed");
+  });
+
+  it("interrupts and reports cancellation for an active query", async () => {
+    let query: Query | undefined;
+    const interrupt = vi.fn(async () => undefined);
+    const queryFactory = vi.fn(((request) => {
+      query = cancellableQuery(request.options, interrupt);
+      return query;
+    }) as QwenQueryFactory);
+    const client = createClient(queryFactory);
+    const events: string[] = [];
+    client.onEvent((event) => events.push(event.type));
+
+    const run = client.run({
+      prompt: "wait",
+      workspacePath: "C:\\workspace",
+      sessionId: "00000000-0000-4000-8000-000000000000",
+      resume: false,
+    });
+    await vi.waitFor(() => expect(query).toBeDefined());
+    await client.cancel();
+    await run;
+
+    expect(interrupt).toHaveBeenCalledOnce();
+    expect(events).toContain("agent.cancelled");
+    expect(events).not.toContain("agent.completed");
+  });
+
+  it("retries a missing persisted session once as a new session", async () => {
+    const optionsSeen: QueryOptions[] = [];
+    const queryFactory = vi.fn(((request) => {
+      optionsSeen.push(request.options ?? {});
+      return optionsSeen.length === 1
+        ? failingMissingSessionQuery(request.options)
+        : successfulQuery();
+    }) as QwenQueryFactory);
+    const logger = {
+      debug: vi.fn<(message: string) => void>(),
+      info: vi.fn<(message: string) => void>(),
+      error: vi.fn<(message: string, error?: unknown) => void>(),
+    };
+    const changes: QwenChangeTracker = {
+      beforeEdit: vi.fn(async () => undefined),
+      afterEdit: vi.fn(async () => undefined),
+      completeAll: vi.fn(async () => undefined),
+    };
+    const client = new QwenCodeAgentClient(
+      () => ({ debug: false }),
+      new PermissionManager(),
+      changes,
+      logger,
+      queryFactory,
+    );
+    const events: string[] = [];
+    client.onEvent((event) => events.push(event.type));
+
+    await client.run({
+      prompt: "hello",
+      workspacePath: "C:\\workspace",
+      sessionId: "00000000-0000-4000-8000-000000000000",
+      resume: true,
+    });
+
+    expect(queryFactory).toHaveBeenCalledTimes(2);
+    expect(optionsSeen[0]?.resume).toBe("00000000-0000-4000-8000-000000000000");
+    expect(optionsSeen[1]?.sessionId).toBe(
+      "00000000-0000-4000-8000-000000000000",
+    );
+    expect(events).toContain("agent.completed");
+    expect(events).not.toContain("agent.failed");
+    expect(logger.info).toHaveBeenCalledWith(
+      "The persisted Qwen session does not exist; retrying once as a new session.",
+    );
+  });
+});
+
+function createClient(
+  queryFactory: QwenQueryFactory,
+  configuration: { readonly executablePath?: string } = {},
+): QwenCodeAgentClient {
+  return new QwenCodeAgentClient(
+    () => ({ ...configuration, debug: false }),
+    new PermissionManager(),
+    {
+      beforeEdit: vi.fn(async () => undefined),
+      afterEdit: vi.fn(async () => undefined),
+      completeAll: vi.fn(async () => undefined),
+    },
+    {
+      debug: vi.fn<(message: string) => void>(),
+      info: vi.fn<(message: string) => void>(),
+      error: vi.fn<(message: string, error?: unknown) => void>(),
+    },
+    queryFactory,
+  );
+}
+
+function failingMissingSessionQuery(options: QueryOptions | undefined): Query {
+  return fakeQuery(async function* () {
+    options?.stderr?.(
+      "No saved session found with ID 00000000-0000-4000-8000-000000000000.",
+    );
+    yield await Promise.reject(new Error("CLI process exited with code 1"));
+  });
+}
+
+function successfulQuery(
+  getContextUsage: () => Promise<Record<string, unknown> | null> = async () =>
+    null,
+): Query {
+  return fakeQuery(async function* () {
+    yield {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "ok",
+    } as SDKMessage;
+  }, getContextUsage);
+}
+
+function usageQuery(): Query {
+  return fakeQuery(
+    async function* () {
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Hola.",
+        usage: {
+          input_tokens: 39_023,
+          output_tokens: 196,
+          total_tokens: 39_219,
+        },
+      } as SDKMessage;
+    },
+    async () => ({
+      modelName: "qwen3.6-35b-a3b",
+      totalTokens: 23_173,
+      contextWindowSize: 262_144,
+      isEstimated: false,
+    }),
+  );
+}
+
+function toolLoopQuery(): Query {
+  return fakeQuery(async function* () {
+    yield {
+      type: "assistant",
+      uuid: "assistant-tool",
+      session_id: "session",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "read_file",
+            input: { file_path: "README.md" },
+          },
+        ],
+      },
+    } as SDKMessage;
+    yield {
+      type: "user",
+      session_id: "session",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "README contents",
+            is_error: false,
+          },
+        ],
+      },
+    } as SDKMessage;
+    yield {
+      type: "assistant",
+      uuid: "assistant-final",
+      session_id: "session",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Project summary" }],
+      },
+    } as SDKMessage;
+    yield {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "Project summary",
+    } as SDKMessage;
+  });
+}
+
+function cancellableQuery(
+  options: QueryOptions | undefined,
+  interrupt: ReturnType<typeof vi.fn<() => Promise<void>>>,
+): Query {
+  return {
+    async *[Symbol.asyncIterator]() {
+      await new Promise<void>((resolve, reject) => {
+        const signal = options?.abortController?.signal;
+        if (signal?.aborted) {
+          reject(new DOMException("Operation aborted", "AbortError"));
+          return;
+        }
+        signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Operation aborted", "AbortError")),
+          { once: true },
+        );
+        if (signal === undefined) {
+          resolve();
+        }
+      });
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "unexpected",
+      } as SDKMessage;
+    },
+    isClosed: () => false,
+    close: vi.fn(async () => undefined),
+    interrupt,
+  } as unknown as Query;
+}
+
+function fakeQuery(
+  messages: () => AsyncGenerator<SDKMessage, void, unknown>,
+  getContextUsage: () => Promise<Record<string, unknown> | null> = async () =>
+    null,
+): Query {
+  return {
+    [Symbol.asyncIterator]: messages,
+    isClosed: () => true,
+    close: vi.fn(async () => undefined),
+    interrupt: vi.fn(async () => undefined),
+    getContextUsage,
+  } as unknown as Query;
+}

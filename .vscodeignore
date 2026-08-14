@@ -1,0 +1,14 @@
+.vscode/**
+src/**
+webview/**
+test/**
+AGENTS.md
+esbuild.mjs
+eslint.config.mjs
+tsconfig*.json
+vitest.config.ts
+.gitignore
+.prettierignore
+coverage/**
+*.vsix
+*.log

@@ -1,0 +1,134 @@
+{
+  "name": "qwen-frontend",
+  "displayName": "Qwen Frontend",
+  "description": "A review-first VS Code frontend for Qwen Code.",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "publisher": "konnits",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.125.0",
+    "node": ">=22.0.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "activationEvents": [
+    "onView:qwenFrontend.chat"
+  ],
+  "main": "./dist/extension.cjs",
+  "scripts": {
+    "vscode:prepublish": "npm run check",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webview/tsconfig.json --noEmit",
+    "lint": "eslint src webview/src test esbuild.mjs",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:live:qwen": "vitest run --config vitest.live.config.ts",
+    "diagnose:qwen": "node scripts/qwen-smoke.mjs",
+    "diagnose:qwen:electron": "node scripts/run-qwen-electron-smoke.mjs",
+    "diagnose:qwen:missing-session": "node scripts/qwen-smoke.mjs --resume-missing",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@qwen-code/sdk": "0.1.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "bundledDependencies": [
+    "@qwen-code/sdk"
+  ],
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@types/vscode": "1.125.0",
+    "esbuild": "0.27.0",
+    "eslint": "9.39.1",
+    "globals": "16.5.0",
+    "prettier": "3.7.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.48.1",
+    "vitest": "4.1.10"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "qwenFrontend.connect",
+        "title": "Qwen Frontend: Connect"
+      },
+      {
+        "command": "qwenFrontend.newSession",
+        "title": "Qwen Frontend: New Session"
+      },
+      {
+        "command": "qwenFrontend.cancel",
+        "title": "Qwen Frontend: Cancel"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "qwenFrontend",
+          "title": "Qwen",
+          "icon": "media/qwen.svg"
+        }
+      ]
+    },
+    "views": {
+      "qwenFrontend": [
+        {
+          "type": "webview",
+          "id": "qwenFrontend.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Qwen Frontend",
+      "properties": {
+        "qwenFrontend.qwen.executablePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Optional Qwen Code executable or CLI bundle path. Leave empty to use the CLI bundled with @qwen-code/sdk."
+        },
+        "qwenFrontend.debug": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "Write verbose, secret-redacted Qwen SDK diagnostics to the Qwen Frontend output channel."
+        }
+      }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "qwenFrontend.newSession",
+          "when": "view == qwenFrontend.chat",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Chat remains visible in Restricted Mode, but Qwen execution and workspace changes are disabled.",
+      "restrictedConfigurations": [
+        "qwenFrontend.qwen.executablePath"
+      ]
+    }
+  },
+  "bundleDependencies": [
+    "@qwen-code/sdk"
+  ]
+}

@@ -1,0 +1,89 @@
+Konnits-Coder/
+|-- .vscode/
+|   |-- launch.json
+|   `-- tasks.json
+|-- dist/
+|   |-- extension.cjs
+|   |-- extension.cjs.map
+|   |-- webview.css
+|   |-- webview.css.map
+|   |-- webview.js
+|   `-- webview.js.map
+|-- docs/
+|   |-- decisions/
+|   |   |-- 0001-direct-sdk-integration.md
+|   |   |-- 0002-webview-ui.md
+|   |   `-- 0003-session-change-review.md
+|   |-- architecture.md
+|   |-- change-review-design.md
+|   |-- research.md
+|   `-- roadmap.md
+|-- media/
+|   `-- qwen.svg
+|-- node_modules/
+|   `-- [installed dependency contents omitted]
+|-- src/
+|   |-- agent/
+|   |   |-- AgentClient.ts
+|   |   |-- AgentEvent.ts
+|   |   `-- AgentSession.ts
+|   |-- changes/
+|   |   |-- ChangeConflictDetector.ts
+|   |   |-- ChangeManager.ts
+|   |   |-- ChangeTrackingService.ts
+|   |   |-- DiffContentProvider.ts
+|   |   |-- ProposedFileChange.ts
+|   |   |-- toolTargets.ts
+|   |   `-- VsCodeFileSystem.ts
+|   |-- chat/
+|   |   |-- ChatController.ts
+|   |   `-- ChatViewProvider.ts
+|   |-- configuration/
+|   |   |-- Configuration.ts
+|   |   `-- ConfigurationValues.ts
+|   |-- logging/
+|   |   `-- Logger.ts
+|   |-- permissions/
+|   |   |-- PermissionManager.ts
+|   |   `-- toolRisk.ts
+|   |-- qwen/
+|   |   |-- QwenCodeAgentClient.ts
+|   |   |-- QwenEventAdapter.ts
+|   |   `-- QwenSessionManager.ts
+|   |-- webview/
+|   |   `-- messages.ts
+|   `-- extension.ts
+|-- test/
+|   `-- unit/
+|       |-- ChangeManager.test.ts
+|       |-- contracts.test.ts
+|       |-- PermissionManager.test.ts
+|       |-- QwenEventAdapter.test.ts
+|       |-- QwenSessionManager.test.ts
+|       `-- toolRisk.test.ts
+|-- webview/
+|   |-- src/
+|   |   |-- App.tsx
+|   |   |-- index.tsx
+|   |   |-- styles.css
+|   |   `-- vscode.ts
+|   `-- tsconfig.json
+|-- .gitignore
+|-- .prettierignore
+|-- .vscodeignore
+|-- AGENTS.md
+|-- CHANGELOG.md
+|-- esbuild.mjs
+|-- eslint.config.mjs
+|-- LICENSE
+|-- package-lock.json
+|-- package.json
+|-- project-structure.txt
+|-- README.md
+|-- tsconfig.eslint.json
+|-- tsconfig.json
+`-- vitest.config.ts
+
+Note: node_modules is represented as a single folder because its generated
+dependency tree contains thousands of files. All project-owned files, generated
+build artifacts, folders, and subfolders are listed above.

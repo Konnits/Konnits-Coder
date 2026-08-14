@@ -1,0 +1,69 @@
+import * as vscode from "vscode";
+import { ChangeManager } from "./changes/ChangeManager.js";
+import { ChangeTrackingService } from "./changes/ChangeTrackingService.js";
+import { DiffContentProvider } from "./changes/DiffContentProvider.js";
+import { VsCodeFileSystem } from "./changes/VsCodeFileSystem.js";
+import { ChatController } from "./chat/ChatController.js";
+import { ChatViewProvider } from "./chat/ChatViewProvider.js";
+import { Configuration } from "./configuration/Configuration.js";
+import { Logger } from "./logging/Logger.js";
+import { PermissionManager } from "./permissions/PermissionManager.js";
+import { QwenCodeAgentClient } from "./qwen/QwenCodeAgentClient.js";
+import { QwenSessionManager } from "./qwen/QwenSessionManager.js";
+
+export function activate(context: vscode.ExtensionContext): void {
+  const configuration = new Configuration();
+  const logger = new Logger(
+    vscode.window.createOutputChannel("Qwen Frontend"),
+    () => configuration.getQwenClientConfiguration().debug,
+  );
+  const fileSystem = new VsCodeFileSystem();
+  const changes = new ChangeManager(fileSystem);
+  const changeTracking = new ChangeTrackingService(changes, fileSystem);
+  const permissions = new PermissionManager();
+  const agent = new QwenCodeAgentClient(
+    () => configuration.getQwenClientConfiguration(),
+    permissions,
+    changeTracking,
+    logger,
+  );
+  const workspaceKey =
+    vscode.workspace.workspaceFolders?.[0]?.uri.toString() ?? "no-workspace";
+  const sessions = new QwenSessionManager(context.workspaceState, workspaceKey);
+  const diff = new DiffContentProvider(changes);
+  const controller = new ChatController(
+    agent,
+    sessions,
+    permissions,
+    changes,
+    fileSystem,
+    diff,
+    logger,
+  );
+  const view = new ChatViewProvider(context.extensionUri, controller);
+
+  context.subscriptions.push(
+    logger,
+    controller,
+    view,
+    { dispose: () => void agent.dispose() },
+    vscode.workspace.registerTextDocumentContentProvider(
+      DiffContentProvider.scheme,
+      diff,
+    ),
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, view, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+    vscode.commands.registerCommand("qwenFrontend.connect", () =>
+      controller.connect(),
+    ),
+    vscode.commands.registerCommand("qwenFrontend.newSession", () =>
+      controller.newSession(),
+    ),
+    vscode.commands.registerCommand("qwenFrontend.cancel", () =>
+      controller.handleMessage({ type: "cancel" }),
+    ),
+    vscode.workspace.onDidGrantWorkspaceTrust(() => controller.refreshTrust()),
+  );
+  logger.info("Qwen Frontend activated.");
+}

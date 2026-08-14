@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+*.vsix
+.vscode-test/
+*.log
+.qwen/pending-skills/
