@@ -45,14 +45,14 @@ Konnits-Coder brings the Qwen Code agent experience into VS Code with a visual w
 
 Qwen Code remains responsible for the actual coding-agent behavior:
 
-* understanding the repository;
-* reading and searching files;
-* reasoning about changes;
-* editing code;
-* running shell commands;
-* running tests;
-* handling tools;
-* managing agent sessions and context.
+- understanding the repository;
+- reading and searching files;
+- reasoning about changes;
+- editing code;
+- running shell commands;
+- running tests;
+- handling tools;
+- managing agent sessions and context.
 
 Konnits-Coder provides the VS Code interface around that agent.
 
@@ -62,23 +62,23 @@ Konnits-Coder provides the VS Code interface around that agent.
 
 Konnits-Coder currently provides:
 
-* Qwen Code chat directly inside the VS Code Activity Bar.
-* Streaming responses.
-* Structured agent activity instead of raw tool-call output.
-* Collapsible processing/activity sections.
-* Independently collapsible tool calls.
-* Safe Markdown rendering.
-* Native VS Code diff review.
-* Accept/reject workflows for agent-generated changes.
-* Interactive permission handling.
-* Agent cancellation.
-* Session management.
-* Context-window usage display.
-* Per-message token estimates.
-* Qwen-reported turn and context token usage.
-* Workspace Trust integration.
-* Diagnostics through the `Qwen Frontend` Output channel.
-* Support for local and remote OpenAI-compatible model endpoints.
+- Qwen Code chat directly inside the VS Code Activity Bar.
+- Streaming responses.
+- Structured agent activity instead of raw tool-call output.
+- Collapsible processing/activity sections.
+- Independently collapsible tool calls.
+- Safe Markdown rendering.
+- Native VS Code diff review.
+- Accept/reject workflows for agent-generated changes.
+- Interactive permission handling.
+- Agent cancellation.
+- Session management.
+- Context-window usage display.
+- Per-message token estimates.
+- Qwen-reported turn and context token usage.
+- Workspace Trust integration.
+- Diagnostics through the `Qwen Frontend` Output channel.
+- Support for local and remote OpenAI-compatible model endpoints.
 
 ---
 
@@ -397,11 +397,11 @@ Explain briefly what this repository does. Do not modify any files.
 
 Confirm that Qwen Code can:
 
-* connect to your model;
-* answer normally;
-* read files;
-* invoke tools;
-* access the repository.
+- connect to your model;
+- answer normally;
+- read files;
+- invoke tools;
+- access the repository.
 
 If this does not work directly in Qwen Code, Konnits-Coder will not be able to fix the underlying provider configuration.
 
@@ -743,11 +743,11 @@ or in your environment.
 
 Verify:
 
-* the model server is running;
-* the Base URL is correct;
-* the port is correct;
-* the firewall allows the connection;
-* remote serving is enabled if using another computer.
+- the model server is running;
+- the Base URL is correct;
+- the port is correct;
+- the firewall allows the connection;
+- remote serving is enabled if using another computer.
 
 For LM Studio:
 
@@ -881,12 +881,12 @@ Qwen Code sends model requests to the provider you configure.
 
 Depending on the task, those requests may contain:
 
-* your prompts;
-* source-code excerpts;
-* file contents;
-* tool results;
-* repository metadata;
-* conversation context.
+- your prompts;
+- source-code excerpts;
+- file contents;
+- tool results;
+- repository metadata;
+- conversation context.
 
 If you use a remote inference server, make sure you trust that server and the network path used to reach it.
 
