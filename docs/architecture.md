@@ -23,7 +23,8 @@ The domain and application layers never expose Qwen SDK messages to the webview.
 
 - `AgentClient`: connection, one active run, cancellation, and event subscription boundary.
 - `QwenCodeAgentClient`: owns SDK queries, permission callbacks, session resumption, and stderr diagnostics.
-- `QwenEventAdapter`: converts streaming deltas, assistant blocks, tool calls/results, and result messages to domain events.
+- `QwenEventAdapter`: converts streaming text/thinking blocks, assistant blocks, tool calls/results, and Qwen subagent parent IDs to domain events.
+- `ContextUsageRefreshScheduler`: debounces boundary-driven context control requests and serializes them so `getContextUsage()` is never called concurrently.
 - `QwenSessionManager`: persists only the workspace session identifier; chat bodies and file content are not persisted.
 - `ChatController`: application state machine, typed webview message dispatch, permissions, and coordination of agent events with change tracking.
 - `ModelManagementController`: native VS Code quick-pick/input flows for selecting, adding, editing, testing, and opening Qwen model configuration. Credential entry is a native password input and never enters webview state.
@@ -40,11 +41,13 @@ The domain and application layers never expose Qwen SDK messages to the webview.
 
 1. The webview sends a validated `sendPrompt` intent.
 2. The controller checks workspace trust, creates/resumes a session, marks the UI running, and invokes `AgentClient`.
-3. SDK partial messages become assistant chunks. Tool blocks become structured read/search/edit/command/test activities.
+3. SDK partial messages become separate assistant and thinking chunks. Tool blocks become structured read/search/edit/command/test/subagent activities. Qwen's `parent_tool_use_id` becomes a typed parent relationship so child thoughts and tools render under the owning Agent call.
 4. Before a sensitive tool runs, the SDK permission callback emits a permission request. Dedicated edit targets are snapshotted before an allow response is returned.
 5. When the tool completes, tracked targets are read again and become pending `ProposedFileChange` records.
 6. The controller publishes a serializable view state. React only renders that state and sends user intentions.
 7. Review opens two virtual documents in `vscode.diff`. Accept keeps the working-tree result after verification. Reject restores the base only after verification.
+
+Qwen remains responsible for discovering and running subagents. The extension does not pass an `agents` override unless a future feature explicitly supplies one, and it does not create child queries. Foreground cancellation uses the parent SDK query's interrupt and abort semantics.
 
 ### Model selection flow
 
@@ -63,10 +66,16 @@ Agent preamble, reasoning summaries, and structured tool events remain processin
 Token metrics remain three separate typed concepts:
 
 - `MessageTokenCount` describes only visible user or final-response text. SDK 0.1.8 has no public message-only tokenizer, so the local UTF-8 heuristic is always marked `estimated` and rendered with `~`.
-- `TurnTokenUsage` is Qwen's exact result-level cumulative input/output usage across the model calls in one agent turn. Assistant-call usage is aggregated only as a fallback when a result-level value is unavailable.
+- `TurnTokenUsage` is Qwen's exact cumulative input/output usage across model calls in one agent turn. Completed assistant-call usage is deduplicated and published progressively; result-level usage replaces it when available.
 - `ContextTokenUsage` is the current session prompt/context returned by `Query.getContextUsage()`, including Qwen's effective context-window capacity. It is not derived from cumulative turn input and may decrease after Qwen compacts context.
 
-`QwenCodeAgentClient` translates SDK usage into domain values before emitting it. `ChatController` associates context updates with the active session and keeps them outside the timeline. Starting a new session clears context immediately. The webview's context meter is state-only metadata; its updates do not create conversation entries or trigger the timeline auto-scroll key.
+`QwenCodeAgentClient` translates SDK usage into domain values before emitting it. `ChatController` associates context updates with the active session and keeps them outside the timeline, while one typed turn-usage item is updated in place for Processing. Starting a new session clears context immediately. No activity receives a token count unless Qwen provides authoritative attribution.
+
+### Presentation state and scrolling
+
+Processing expansion uses `automatic`, `user-expanded`, and `user-collapsed` preferences. Automatic state may open a new/failed/waiting turn and collapse a completed turn, but permission, failure, tool, thought, and subagent events never overwrite an explicit preference. Approval cards are siblings of the conversation turns and stay visible when Processing is collapsed.
+
+The webview keeps an explicit follow-latest state based on distance from the document bottom. A `ResizeObserver` catches streaming Markdown, disclosure, token, permission, and nested-agent layout changes; coalesced animation-frame scrolling anchors the document only while follow mode is active. A manual scroll away disables it, returning near the bottom or choosing **Jump to latest** re-enables it. The streaming path does not call `scrollIntoView()`.
 
 ## UI states
 

@@ -17,6 +17,22 @@ Confirmed SDK behavior:
 - `pathToQwenExecutable` is optional in the 0.1.8 declarations because the package includes a bundled CLI. It can still target an explicit installed Qwen executable.
 - The SDK and current Qwen Code require Node.js 22 or newer.
 
+### Thinking and partial-message correlation
+
+The installed SDK declares `ThinkingBlock` separately from `TextBlock` and emits `thinking_delta` from `SDKPartialAssistantMessage` when `includePartialMessages` is enabled. The bundled CLI implementation was also inspected: it emits `content_block_start`, `thinking_delta`, `content_block_stop`, a completed assistant message, and `message_stop`. Partial envelope UUIDs are newly generated for every event and therefore are not correlation IDs. The stable stream scope is `parent_tool_use_id` (or the single main stream), while `message_start.message.id` matches the completed assistant message UUID.
+
+Konnits-Coder renders only these typed Qwen thinking blocks. It does not infer thoughts from ordinary assistant text. Qwen does not expose a duration field in this SDK, so the UI's thought duration is explicitly a local wall-clock measure between the first and final block events. No authoritative per-thought token attribution is exposed.
+
+### Qwen-managed subagents
+
+The current official [Agent tool documentation](https://qwenlm.github.io/qwen-code-docs/en/developers/tools/task/) and [subagent documentation](https://qwenlm.github.io/qwen-code-docs/en/users/features/sub-agents/) describe Qwen-owned discovery, foreground/background execution, live progress, and project/user agent configuration. The installed SDK exposes `agents` for programmatically supplied definitions, but the bundled CLI's `AgentTool` already asks its `SubagentManager` to discover configured and built-in agents. The extension therefore does not pass an empty `agents` option or duplicate Qwen's configuration parser.
+
+The direct SDK query has no `coreTools` or `excludeTools` restriction, so `agent` remains model-visible. The bundled stream adapter emits child assistant/tool/result events with the owning Agent tool call in `parent_tool_use_id`; Konnits-Coder preserves that relationship. Both `agent` and the older SDK declaration's `task` spelling are recognized for presentation. `Query.interrupt()` plus the query `AbortController` remain the only cancellation mechanism; the bundled Agent invocation propagates its abort signal to foreground children.
+
+The public `CanUseTool` options in SDK 0.1.8 expose `signal` and suggestions, but not a tool-use ID or parent agent ID. Subagent-originated approval requests remain actionable through the same callback, but Konnits-Coder cannot label their origin authoritatively with this SDK version. It does not guess.
+
+A live SDK run on 2026-08-14 conclusively emitted a root `agent` tool start/completion and a later parent assistant response. Repeating the run with an instruction that the child read two specific files still emitted no public child message carrying `parent_tool_use_id`, although the bundled implementation contains a progress adapter for such messages. Nested rendering is implemented and unit-tested for the declared protocol, but live child-tool visibility is unavailable in this installed SDK/CLI/provider path. The direct CLI may show richer in-process Agent progress than the external SDK stream.
+
 ### Token and context usage
 
 The installed 0.1.8 declarations and implementation expose three relevant public values:
@@ -31,6 +47,10 @@ A live SDK probe against the configured local Qwen model confirmed the distincti
 
 With a single-string SDK prompt, the transport closes input as soon as the result is routed, leaving no reliable control-request window. The extension now uses the SDK's documented `AsyncIterable<SDKUserMessage>` prompt form for the same one user message, keeps that input stream open through the result, requests current context, and then closes it. This changes transport lifetime only; sessions remain one SDK query per user turn. Context-control failures are caught and do not change a successful agent result into a failed turn.
 
+Context refreshes are now scheduled at query initialization and useful typed boundaries (assistant completion, thought completion, tool start/result, and final result). A 500 ms debounce coalesces adjacent boundaries and the scheduler never overlaps `getContextUsage()` control requests. Mid-request values are published exactly as returned; stale values are accepted rather than interpolated. Completed assistant `message.usage` values are deduplicated by assistant UUID and accumulated progressively. The final result usage, when present, replaces the progressive aggregate as the authoritative turn total.
+
+The public protocol does not attribute provider input/output usage to a specific tool or thought. Child assistant calls may contribute to aggregate turn usage, but SDK 0.1.8 does not provide a safe per-subagent breakdown in its public message contract. Individual activity rows consequently have no token badge; the Processing header shows only authoritative cumulative turn usage.
+
 No public SDK API tokenizes an arbitrary visible message independently of hidden instructions, tool traffic, or the complete model turn. Visible user and final-response counts therefore use a model-independent UTF-8 byte heuristic and are explicitly marked `~`; they must not be described as Qwen tokenizer results.
 
 ### Windows LM Studio failure investigation
@@ -39,7 +59,7 @@ The failing execution path was reproduced independently of VS Code on Windows 11
 
 - `@qwen-code/sdk`: 0.1.8
 - SDK-bundled Qwen CLI: 0.19.10
-- previously reported global CLI: 0.21.12; it was not discoverable from the current extension/tool environment (`Get-Command qwen`, `where qwen`, and the npm global package directory found no installation), so it is not the executable Konnits-Coder uses
+- global CLI: 0.21.12 at `C:\Users\geral\AppData\Local\qwen-code\bin\qwen.cmd`; the extension still uses the SDK-bundled 0.19.10 CLI by default unless its executable override is configured
 
 The Extension Host reproduction identified a separate Windows/Electron launch defect. SDK 0.1.8 resolves a JavaScript CLI to `{ command: process.execPath, args: [cliPath] }`. In a normal Node process this is correct; in a VS Code Extension Host, `process.execPath` is `Code.exe`. The child Qwen 0.19.10 process then treated its own `cli.js` path as the initial positional prompt before the SDK wrote the real user frame. The persisted Qwen session contained the CLI path as its first user record, while SDK diagnostics contained only the `initialize` control write and no user write.
 
