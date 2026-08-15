@@ -61,6 +61,57 @@ describe("ChatController terminal states", () => {
     ).toBe("estimated");
   });
 
+  it("marks an interrupted session resumable before accepting the next turn", async () => {
+    const { controller, agent, markEstablished } = await createController();
+
+    agent.emit(startedEvent());
+    agent.emit(messageStarted("active-assistant"));
+    agent.emit({
+      type: "thinking.started",
+      thoughtId: "active-thinking",
+      timestamp: Date.now(),
+    });
+    agent.emit({
+      type: "tool.started",
+      callId: "active-tool",
+      toolName: "read_file",
+      kind: "read",
+      title: "Read",
+      timestamp: Date.now(),
+    });
+    agent.emit({
+      type: "agent.cancelled",
+      runId: "run-1",
+      timestamp: Date.now(),
+    });
+
+    expect(markEstablished).toHaveBeenCalledWith("session-1");
+    expect(controller.getState().status).toBe("idle");
+    expect(controller.getState().timeline).toContainEqual(
+      expect.objectContaining({
+        type: "assistant",
+        id: "active-assistant",
+        complete: true,
+        cancelled: true,
+      }),
+    );
+    expect(controller.getState().timeline).toContainEqual(
+      expect.objectContaining({
+        type: "thinking",
+        id: "active-thinking",
+        complete: true,
+        cancelled: true,
+      }),
+    );
+    expect(controller.getState().timeline).toContainEqual(
+      expect.objectContaining({
+        type: "tool",
+        id: "active-tool",
+        state: "cancelled",
+      }),
+    );
+  });
+
   it("keeps preamble and tools out of the accumulated final response", async () => {
     const { controller, agent } = await createController();
     agent.emit(startedEvent());
@@ -377,16 +428,18 @@ async function createController(
   const { ChatController } = await import("../../src/chat/ChatController.js");
   const agent = new FakeAgentClient();
   const disposable = (): { dispose(): void } => ({ dispose: () => undefined });
+  const markEstablished = vi.fn(async () => undefined);
+  const sessions = {
+    create: async () => ({ id: "session-2" }),
+    getOrCreate: async () => ({
+      session: { id: "session-1" },
+      resume: false,
+    }),
+    markEstablished,
+  } as unknown as QwenSessionManager;
   const controller = new ChatController(
     agent,
-    {
-      create: async () => ({ id: "session-2" }),
-      getOrCreate: async () => ({
-        session: { id: "session-1" },
-        resume: false,
-      }),
-      markEstablished: async () => undefined,
-    } as unknown as QwenSessionManager,
+    sessions,
     {
       onDidChange: disposable,
       list: () => [],
@@ -403,7 +456,7 @@ async function createController(
     tokenCounter,
     models,
   );
-  return { controller, agent };
+  return { controller, agent, sessions, markEstablished };
 }
 
 function fakeModelManagement(result: {

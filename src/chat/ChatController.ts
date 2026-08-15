@@ -436,7 +436,22 @@ export class ChatController implements vscode.Disposable {
         this.setStatus("failed");
         return;
       case "agent.cancelled":
-        this.setStatus("connected");
+        this.markActiveTurnCancelled();
+        // A supported Qwen interrupt leaves the persisted session resumable
+        // even though the turn did not complete successfully. Record that
+        // fact before the next prompt can be accepted; otherwise the session
+        // manager starts the next turn with sessionId instead of resume.
+        if (this.sessionId !== undefined) {
+          void this.sessions
+            .markEstablished(this.sessionId)
+            .catch((error: unknown) =>
+              this.logger.error(
+                "Unable to persist the Qwen session after cancellation.",
+                error,
+              ),
+            );
+        }
+        this.setStatus("idle");
         return;
     }
     this.emitChange();
@@ -504,6 +519,24 @@ export class ChatController implements vscode.Disposable {
       startedAt: Date.now(),
       ...(durationMs === undefined ? {} : { durationMs }),
     });
+  }
+
+  private markActiveTurnCancelled(): void {
+    const turnStart = findLastTimelineIndex(
+      this.timeline,
+      (item) => item.type === "user",
+    );
+    for (let index = turnStart + 1; index < this.timeline.length; index += 1) {
+      const item = this.timeline[index];
+      if (item?.type === "tool" && item.state === "running") {
+        this.timeline[index] = { ...item, state: "cancelled" };
+      } else if (
+        (item?.type === "assistant" || item?.type === "thinking") &&
+        !item.complete
+      ) {
+        this.timeline[index] = { ...item, complete: true, cancelled: true };
+      }
+    }
   }
 
   private updateTurnUsage(runId: string, usage: TurnTokenUsage): void {

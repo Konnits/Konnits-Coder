@@ -114,11 +114,15 @@ export function ActivityItem({
   );
 }
 
-type ActivityState = "running" | "completed" | "failed";
+type ActivityState = "running" | "completed" | "failed" | "cancelled";
 
 function activityState(item: ProcessingActivity): ActivityState {
   if (item.type === "assistant" || item.type === "thinking") {
-    return item.complete ? "completed" : "running";
+    return item.cancelled === true
+      ? "cancelled"
+      : item.complete
+        ? "completed"
+        : "running";
   }
   return item.state === "succeeded" ? "completed" : item.state;
 }
@@ -131,6 +135,8 @@ function activityIcon(state: ActivityState): string {
       return "✓";
     case "failed":
       return "✕";
+    case "cancelled":
+      return "⊘";
   }
 }
 
@@ -142,6 +148,8 @@ function activityStateLabel(state: ActivityState): string {
       return "Completed";
     case "failed":
       return "Failed";
+    case "cancelled":
+      return "Cancelled";
   }
 }
 

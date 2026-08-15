@@ -72,8 +72,7 @@ const CLI_TARGET_ENVIRONMENT_VARIABLE = "QWEN_FRONTEND_CLI_TARGET";
 
 export class QwenCodeAgentClient implements AgentClient {
   private readonly listeners = new Set<(event: AgentEvent) => void>();
-  private activeQuery: Query | undefined;
-  private activeAbortController: AbortController | undefined;
+  private activeTurn: ActiveQwenTurn | undefined;
   private runtimeDiagnostics: QwenRuntimeDiagnostics | undefined;
 
   constructor(
@@ -112,16 +111,26 @@ export class QwenCodeAgentClient implements AgentClient {
   }
 
   async run(request: AgentRunRequest): Promise<void> {
-    if (this.activeQuery !== undefined) {
+    if (this.activeTurn !== undefined) {
       throw new Error("A Qwen operation is already running.");
     }
 
     const runId = randomUUID();
     const abortController = new AbortController();
+    const turn: ActiveQwenTurn = {
+      runId,
+      sessionId: request.sessionId,
+      abortController,
+      query: undefined,
+      cancellationRequested: false,
+    };
     const diagnostics = new QwenDiagnosticCapture(
       this.runtimeDiagnostics?.secrets ?? [],
     );
-    this.activeAbortController = abortController;
+    this.activeTurn = turn;
+    this.logger.debug(
+      `Turn started: turnId=${runId} sessionId=${request.sessionId}.`,
+    );
     this.emit({
       type: "agent.started",
       runId,
@@ -145,21 +154,26 @@ export class QwenCodeAgentClient implements AgentClient {
         executionResult = await this.executeQuery(
           request,
           runId,
-          abortController,
+          turn,
           request.resume,
           diagnostics,
         );
       } catch (error) {
-        if (request.resume && diagnostics.containsMissingSession()) {
+        if (
+          request.resume &&
+          !turn.cancellationRequested &&
+          !abortController.signal.aborted &&
+          diagnostics.containsMissingSession()
+        ) {
           this.logger.info(
             "The persisted Qwen session does not exist; retrying once as a new session.",
           );
-          await this.closeActiveQuery();
+          await this.closeActiveQuery(turn);
           diagnostics.clear();
           executionResult = await this.executeQuery(
             request,
             runId,
-            abortController,
+            turn,
             false,
             diagnostics,
           );
@@ -168,6 +182,9 @@ export class QwenCodeAgentClient implements AgentClient {
         }
       }
 
+      if (turn.cancellationRequested) {
+        throw new Error("Qwen turn cancelled by the user.");
+      }
       await this.changes.completeAll();
       this.emit({
         type: "agent.completed",
@@ -182,7 +199,12 @@ export class QwenCodeAgentClient implements AgentClient {
       });
     } catch (error) {
       await this.safelyCompleteTrackedChanges();
-      if (isAbortError(error) || abortController.signal.aborted) {
+      if (
+        turn.cancellationRequested ||
+        isAbortError(error) ||
+        abortController.signal.aborted
+      ) {
+        this.logger.debug(`Turn cancelled: turnId=${runId}.`);
         this.emit({ type: "agent.cancelled", runId, timestamp: Date.now() });
       } else {
         const message = toErrorMessage(error);
@@ -200,23 +222,49 @@ export class QwenCodeAgentClient implements AgentClient {
       }
     } finally {
       this.permissions.denyAll();
-      this.activeAbortController = undefined;
-      await this.closeActiveQuery();
+      await this.closeActiveQuery(turn);
+      if (this.activeTurn === turn) {
+        this.activeTurn = undefined;
+      }
+      this.logger.debug(`Turn disposed: turnId=${runId}.`);
     }
   }
 
   async cancel(): Promise<void> {
-    const activeQuery = this.activeQuery;
-    if (activeQuery === undefined) {
+    const turn = this.activeTurn;
+    if (turn === undefined) {
       return;
     }
+    turn.cancellationRequested = true;
     this.permissions.denyAll();
-    this.activeAbortController?.abort();
-    await activeQuery
-      .interrupt()
-      .catch((error: unknown) =>
-        this.logger.debug(`Qwen interrupt reported: ${toErrorMessage(error)}`),
+    this.logger.debug(`Cancellation requested: turnId=${turn.runId}.`);
+    const activeQuery = turn.query;
+    if (activeQuery === undefined) {
+      // There is no SDK query to interrupt yet. Aborting this per-turn
+      // controller prevents a query that is still being constructed from
+      // starting, but never abort a live query before its supported interrupt
+      // request has had a chance to reach Qwen Code.
+      turn.abortController.abort();
+      this.logger.debug(
+        `Abort signal triggered before query creation: turnId=${turn.runId}.`,
       );
+      return;
+    }
+    if (activeQuery.isClosed()) {
+      return;
+    }
+    try {
+      await activeQuery.interrupt();
+      this.logger.debug(
+        `Qwen interrupt accepted: turnId=${turn.runId}; session retained for resume sessionId=${turn.sessionId}.`,
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        `Qwen interrupt reported: ${toErrorMessage(error)}; aborting the turn transport as a fallback.`,
+      );
+      turn.abortController.abort();
+      this.logger.debug(`Abort signal triggered: turnId=${turn.runId}.`);
+    }
   }
 
   onEvent(listener: (event: AgentEvent) => void): Disposable {
@@ -284,7 +332,7 @@ export class QwenCodeAgentClient implements AgentClient {
   private async executeQuery(
     request: AgentRunRequest,
     runId: string,
-    abortController: AbortController,
+    turn: ActiveQwenTurn,
     resume: boolean,
     diagnostics: QwenDiagnosticCapture,
   ): Promise<QwenExecutionResult> {
@@ -292,14 +340,17 @@ export class QwenCodeAgentClient implements AgentClient {
     const subagents = await this.resolveSubagents(request.workspacePath);
     const options = this.createQueryOptions(
       request,
-      abortController,
+      turn.abortController,
       resume,
       diagnostics,
       subagents,
     );
     const prompt = createControlledPrompt(request.prompt, request.sessionId);
     const activeQuery = this.queryFactory({ prompt: prompt.messages, options });
-    this.activeQuery = activeQuery;
+    turn.query = activeQuery;
+    this.logger.debug(
+      `Query created: turnId=${turn.runId} sessionId=${request.sessionId} resume=${String(resume)}.`,
+    );
     const contextRefresh = new ContextUsageRefreshScheduler(() =>
       this.refreshContextUsage(activeQuery, request.sessionId),
     );
@@ -309,6 +360,7 @@ export class QwenCodeAgentClient implements AgentClient {
     const callUsages = new Map<string, Usage>();
     contextRefresh.schedule();
 
+    let iteratorCompleted = false;
     try {
       for await (const message of activeQuery) {
         if (this.configuration().debug) {
@@ -368,9 +420,13 @@ export class QwenCodeAgentClient implements AgentClient {
           prompt.finish();
         }
       }
+      iteratorCompleted = true;
     } finally {
       contextRefresh.stop();
       prompt.finish();
+      this.logger.debug(
+        `Query iterator ended: turnId=${turn.runId} reason=${turn.cancellationRequested ? "cancelled" : iteratorCompleted ? "completed" : "error"}.`,
+      );
     }
     const turnUsage =
       resultUsage ?? aggregateQwenCallUsages([...callUsages.values()]);
@@ -454,9 +510,9 @@ export class QwenCodeAgentClient implements AgentClient {
     }
   }
 
-  private async closeActiveQuery(): Promise<void> {
-    const activeQuery = this.activeQuery;
-    this.activeQuery = undefined;
+  private async closeActiveQuery(turn: ActiveQwenTurn): Promise<void> {
+    const activeQuery = turn.query;
+    turn.query = undefined;
     if (activeQuery !== undefined && !activeQuery.isClosed()) {
       await activeQuery
         .close()
@@ -465,6 +521,9 @@ export class QwenCodeAgentClient implements AgentClient {
             `Qwen query close reported: ${toErrorMessage(error)}`,
           ),
         );
+    }
+    if (activeQuery !== undefined) {
+      this.logger.debug(`Query disposed: turnId=${turn.runId}.`);
     }
   }
 
@@ -538,6 +597,14 @@ export class QwenCodeAgentClient implements AgentClient {
         this.logger.error("Unable to finalize tracked file changes.", error),
       );
   }
+}
+
+interface ActiveQwenTurn {
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly abortController: AbortController;
+  query: Query | undefined;
+  cancellationRequested: boolean;
 }
 
 interface QwenExecutionResult {

@@ -30,6 +30,7 @@ export interface AssistantTimelineItem {
   readonly id: string;
   readonly text: string;
   readonly complete: boolean;
+  readonly cancelled?: boolean;
   readonly parentId?: string;
 }
 
@@ -38,6 +39,7 @@ export interface ThinkingTimelineItem {
   readonly id: string;
   readonly text: string;
   readonly complete: boolean;
+  readonly cancelled?: boolean;
   readonly startedAt: number;
   readonly durationMs?: number;
   readonly parentId?: string;
@@ -57,7 +59,7 @@ export interface ToolTimelineItem {
   readonly kind: AgentActivityKind;
   readonly title: string;
   readonly detail?: string;
-  readonly state: "running" | "succeeded" | "failed";
+  readonly state: "running" | "succeeded" | "failed" | "cancelled";
   readonly output?: string;
   readonly parentId?: string;
   readonly subagentName?: string;

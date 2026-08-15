@@ -60,15 +60,14 @@ button.danger {
 }
 
 .app {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
 .connection-header {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+  flex: 0 0 auto;
   background: var(--vscode-sideBar-background);
   border-bottom: 1px solid
     var(--vscode-sideBar-border, var(--vscode-widget-border));
@@ -77,6 +76,7 @@ button.danger {
 .status-bar {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 7px;
   min-height: 34px;
   padding: 7px 12px;
@@ -160,11 +160,12 @@ button.danger {
 }
 
 .model-selector {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
   max-width: 42%;
+  flex: 0 1 42%;
   margin-left: auto;
   padding: 2px 6px;
   color: var(--vscode-descriptionForeground);
@@ -177,11 +178,21 @@ button.danger {
   background: var(--vscode-toolbar-hoverBackground);
 }
 
-.model-selector span:last-child {
+.model-label {
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.model-chevron {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
 }
 
 .model-selector + .session {
@@ -224,6 +235,15 @@ button.danger {
 .timeline {
   flex: 1;
   padding: 4px 12px 14px;
+}
+
+.chat-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 48px;
+  scrollbar-gutter: stable;
 }
 
 .empty-state {
@@ -423,6 +443,10 @@ pre {
 
 .activity-failed .activity-state-icon {
   color: var(--vscode-testing-iconFailed);
+}
+
+.activity-cancelled .activity-state-icon {
+  color: var(--vscode-descriptionForeground);
 }
 
 .activity-summary {
@@ -758,8 +782,7 @@ pre {
 }
 
 .composer {
-  position: sticky;
-  bottom: 0;
+  flex: 0 0 auto;
   padding: 9px 10px 10px;
   background: var(--vscode-sideBar-background);
   border-top: 1px solid
@@ -767,12 +790,39 @@ pre {
 }
 
 .jump-latest {
-  position: sticky;
-  bottom: 104px;
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
   z-index: 3;
-  width: fit-content;
-  margin: 0 auto 8px;
-  box-shadow: 0 2px 7px var(--vscode-widget-shadow);
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 50%;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+  transform: translateX(-50%);
+}
+
+.jump-latest:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.jump-latest:active:not(:disabled) {
+  transform: translate(-50%, 1px);
+}
+
+.jump-latest svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .composer textarea {

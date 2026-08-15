@@ -41,10 +41,10 @@ export function App(): React.JSX.Element {
       state.timeline
         .map((item) => {
           if (item.type === "assistant") {
-            return `${item.type}:${item.id}:${String(item.text.length)}:${String(item.complete)}`;
+            return `${item.type}:${item.id}:${String(item.text.length)}:${String(item.complete)}:${String(item.cancelled)}`;
           }
           if (item.type === "thinking") {
-            return `${item.type}:${item.id}:${String(item.text.length)}:${String(item.complete)}`;
+            return `${item.type}:${item.id}:${String(item.text.length)}:${String(item.complete)}:${String(item.cancelled)}`;
           }
           if (item.type === "finalResponse" || item.type === "user") {
             return `${item.type}:${item.id}:${String(item.text.length)}`;
@@ -96,7 +96,7 @@ export function App(): React.JSX.Element {
   };
 
   return (
-    <main className="app" ref={contentRef}>
+    <main className="app">
       <div className="connection-header">
         <header className="status-bar">
           <span
@@ -115,8 +115,8 @@ export function App(): React.JSX.Element {
             aria-label={`Current model: ${state.model.label}. Select or manage models.`}
             onClick={() => vscode.postMessage({ type: "manageModels" })}
           >
-            <span aria-hidden="true">⌄</span>
-            <span>{state.model.label}</span>
+            <span className="model-label">{state.model.label}</span>
+            <span className="model-chevron" aria-hidden="true" />
           </button>
           {state.sessionId !== undefined && (
             <span className="session" title={state.sessionId}>
@@ -129,66 +129,82 @@ export function App(): React.JSX.Element {
         )}
       </div>
 
-      {!state.trusted && (
-        <section className="notice" role="alert">
-          Qwen execution is disabled in Restricted Mode. Trust this workspace to
-          use the agent.
-        </section>
-      )}
-
-      {state.model.warning !== undefined && (
-        <section className="notice model-notice" role="status">
-          {state.model.warning}
-        </section>
-      )}
-
-      {state.model.error !== undefined && (
-        <section className="error-message model-notice" role="alert">
-          <strong>Model settings</strong>
-          <p>{state.model.error}</p>
-        </section>
-      )}
-
-      <section className="timeline" aria-label="Conversation">
-        {state.timeline.length === 0 ? <EmptyState /> : null}
-        {conversation.map((entry) =>
-          entry.type === "turn" ? (
-            <AgentTurn
-              key={entry.id}
-              turn={entry}
-              workspacePath={state.workspacePath}
-              onOpenLink={openLink}
-            />
-          ) : (
-            <StandaloneEntry
-              key={entry.id}
-              entry={entry}
-              onOpenLink={openLink}
-            />
-          ),
+      <div className="chat-body" ref={contentRef}>
+        {!state.trusted && (
+          <section className="notice" role="alert">
+            Qwen execution is disabled in Restricted Mode. Trust this workspace
+            to use the agent.
+          </section>
         )}
-        {state.permissions.map((permission) => (
-          <PermissionCard
-            key={permission.id}
-            permission={permission}
-            onDecision={(decision) =>
-              vscode.postMessage({
-                type: "resolvePermission",
-                id: permission.id,
-                decision,
-              })
-            }
-          />
-        ))}
-      </section>
 
-      {!following && (
-        <button className="jump-latest" type="button" onClick={jumpToLatest}>
-          ↓ Jump to latest
-        </button>
-      )}
+        {state.model.warning !== undefined && (
+          <section className="notice model-notice" role="status">
+            {state.model.warning}
+          </section>
+        )}
 
-      {state.changes.length > 0 && <ChangedFiles changes={state.changes} />}
+        {state.model.error !== undefined && (
+          <section className="error-message model-notice" role="alert">
+            <strong>Model settings</strong>
+            <p>{state.model.error}</p>
+          </section>
+        )}
+
+        <section className="timeline" aria-label="Conversation">
+          {state.timeline.length === 0 ? <EmptyState /> : null}
+          {conversation.map((entry) =>
+            entry.type === "turn" ? (
+              <AgentTurn
+                key={entry.id}
+                turn={entry}
+                workspacePath={state.workspacePath}
+                onOpenLink={openLink}
+              />
+            ) : (
+              <StandaloneEntry
+                key={entry.id}
+                entry={entry}
+                onOpenLink={openLink}
+              />
+            ),
+          )}
+          {state.permissions.map((permission) => (
+            <PermissionCard
+              key={permission.id}
+              permission={permission}
+              onDecision={(decision) =>
+                vscode.postMessage({
+                  type: "resolvePermission",
+                  id: permission.id,
+                  decision,
+                })
+              }
+            />
+          ))}
+        </section>
+
+        {state.changes.length > 0 && <ChangedFiles changes={state.changes} />}
+
+        {!following && (
+          <button
+            className="jump-latest"
+            type="button"
+            aria-label="Jump to latest message"
+            title="Jump to latest"
+            onClick={jumpToLatest}
+          >
+            <svg
+              viewBox="0 0 12 12"
+              width="12"
+              height="12"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="M6 1.5v6m0 0L3.25 4.75M6 7.5l2.75-2.75" />
+            </svg>
+          </button>
+        )}
+      </div>
 
       <footer className="composer">
         <textarea
@@ -311,7 +327,9 @@ function StandaloneEntry({
               ? "●"
               : item.state === "succeeded"
                 ? "✓"
-                : "✕"}
+                : item.state === "cancelled"
+                  ? "⊘"
+                  : "✕"}
           </span>
           <div>
             <strong>{item.title}</strong>

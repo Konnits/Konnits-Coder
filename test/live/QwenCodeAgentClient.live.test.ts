@@ -11,6 +11,90 @@ const liveIt = process.env.QWEN_LIVE_TEST === "1" ? it : it.skip;
 
 describe("QwenCodeAgentClient live integration", () => {
   liveIt(
+    "recovers the same Qwen session after an in-flight interrupt",
+    { timeout: 300_000 },
+    async () => {
+      const events: AgentEvent[] = [];
+      const info: string[] = [];
+      const client = new QwenCodeAgentClient(
+        () => ({ debug: false }),
+        new PermissionManager(),
+        {
+          beforeEdit: async () => undefined,
+          afterEdit: async () => undefined,
+          completeAll: async () => undefined,
+        },
+        {
+          debug: () => undefined,
+          info: (message) => info.push(message),
+          error: () => undefined,
+        },
+      );
+      client.onEvent((event) => events.push(event));
+      const sessionId = randomUUID();
+
+      try {
+        await client.connect();
+        const firstRun = client.run({
+          prompt:
+            "Analiza este repositorio en profundidad. Lee múltiples archivos y explica su arquitectura. No modifiques archivos.",
+          workspacePath: process.cwd(),
+          sessionId,
+          resume: false,
+        });
+        await vi.waitFor(
+          () =>
+            expect(
+              events.some(
+                (event) =>
+                  event.type === "thinking.chunk" ||
+                  event.type === "assistant.message.chunk" ||
+                  event.type === "tool.started",
+              ),
+            ).toBe(true),
+          { timeout: 120_000 },
+        );
+        expect(events.some((event) => event.type === "agent.completed")).toBe(
+          false,
+        );
+
+        await client.cancel();
+        await firstRun;
+
+        expect(events.some((event) => event.type === "agent.cancelled")).toBe(
+          true,
+        );
+        const recoveryStart = events.length;
+        const recoveryLogStart = info.length;
+        await client.run({
+          prompt: "Responde solamente: CANCEL_RECOVERY_OK.",
+          workspacePath: process.cwd(),
+          sessionId,
+          resume: true,
+        });
+
+        const recoveryEvents = events.slice(recoveryStart);
+        expect(
+          recoveryEvents.some((event) => event.type === "agent.failed"),
+        ).toBe(false);
+        expect(
+          info
+            .slice(recoveryLogStart)
+            .some((message) => message.includes("retrying once")),
+        ).toBe(false);
+        expect(
+          recoveryEvents
+            .filter((event) => event.type === "assistant.message.chunk")
+            .map((event) => event.text)
+            .join(""),
+        ).toContain("CANCEL_RECOVERY_OK");
+      } finally {
+        await client.dispose();
+      }
+    },
+  );
+
+  liveIt(
     "reports token metrics across a real resumed Qwen session",
     { timeout: 300_000 },
     async () => {

@@ -279,6 +279,32 @@ describe("QwenCodeAgentClient", () => {
     expect(events).not.toContain("agent.completed");
   });
 
+  it("uses a fresh per-turn abort controller after cancellation", async () => {
+    const optionsSeen: QueryOptions[] = [];
+    let first = true;
+    const interrupt = vi.fn(async () => undefined);
+    const queryFactory = vi.fn(((request) => {
+      optionsSeen.push(request.options ?? {});
+      if (first) {
+        first = false;
+        return cancellableQuery(request.options, interrupt);
+      }
+      return successfulQuery();
+    }) as QwenQueryFactory);
+    const client = createClient(queryFactory);
+
+    const cancelledRun = client.run({ ...runRequest(), prompt: "first" });
+    await vi.waitFor(() => expect(optionsSeen).toHaveLength(1));
+    await client.cancel();
+    await cancelledRun;
+    await client.run({ ...runRequest(), prompt: "second", resume: true });
+
+    expect(optionsSeen[0]?.abortController?.signal.aborted).toBe(false);
+    expect(optionsSeen[1]?.abortController).not.toBe(
+      optionsSeen[0]?.abortController,
+    );
+  });
+
   it("keeps the parent turn running after a foreground subagent result", async () => {
     const client = createClient(
       vi.fn((() => subagentLoopQuery()) as QwenQueryFactory),
@@ -674,9 +700,11 @@ function cancellableQuery(
   options: QueryOptions | undefined,
   interrupt: ReturnType<typeof vi.fn<() => Promise<void>>>,
 ): Query {
+  let rejectCancellation: ((reason: unknown) => void) | undefined;
   return {
     async *[Symbol.asyncIterator]() {
       await new Promise<void>((resolve, reject) => {
+        rejectCancellation = reject;
         const signal = options?.abortController?.signal;
         if (signal?.aborted) {
           reject(new DOMException("Operation aborted", "AbortError"));
@@ -700,7 +728,12 @@ function cancellableQuery(
     },
     isClosed: () => false,
     close: vi.fn(async () => undefined),
-    interrupt,
+    interrupt: vi.fn(async () => {
+      await interrupt();
+      rejectCancellation?.(
+        new DOMException("Operation interrupted", "AbortError"),
+      );
+    }),
   } as unknown as Query;
 }
 

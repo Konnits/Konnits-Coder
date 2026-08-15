@@ -64,4 +64,27 @@ describe("ActivityItem", () => {
     expect(html).toContain("nested-activities");
     expect(html).toContain("package.json");
   });
+
+  it("does not leave a cancelled tool in the running state", () => {
+    const html = renderToStaticMarkup(
+      createElement(ActivityItem, {
+        node: {
+          item: {
+            type: "tool",
+            id: "cancelled-tool",
+            kind: "read",
+            title: "Read",
+            state: "cancelled",
+          },
+          children: [],
+        },
+        expansion: {},
+        onToggle: vi.fn(),
+        onOpenLink: vi.fn(),
+      }),
+    );
+    expect(html).toContain("activity-cancelled");
+    expect(html).toContain("Cancelled");
+    expect(html).not.toContain("Running");
+  });
 });

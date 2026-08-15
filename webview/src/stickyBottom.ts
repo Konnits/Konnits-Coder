@@ -46,14 +46,16 @@ export function useStickyBottom(contentVersion: string): {
   const frameRef = useRef<number | undefined>(undefined);
   const [following, setFollowing] = useState(true);
 
-  const metrics = useCallback(
-    (): ScrollMetrics => ({
-      scrollHeight: document.documentElement.scrollHeight,
-      scrollTop: window.scrollY,
-      clientHeight: window.innerHeight,
-    }),
-    [],
-  );
+  const metrics = useCallback((): ScrollMetrics => {
+    const element = contentRef.current;
+    return element === null
+      ? { scrollHeight: 0, scrollTop: 0, clientHeight: 0 }
+      : {
+          scrollHeight: element.scrollHeight,
+          scrollTop: element.scrollTop,
+          clientHeight: element.clientHeight,
+        };
+  }, []);
 
   const anchor = useCallback((): void => {
     if (!controllerRef.current.shouldAnchorAfterLayoutChange()) {
@@ -67,17 +69,21 @@ export function useStickyBottom(contentVersion: string): {
       if (!controllerRef.current.shouldAnchorAfterLayoutChange()) {
         return;
       }
-      window.scrollTo({
-        top: Math.max(
-          0,
-          document.documentElement.scrollHeight - window.innerHeight,
-        ),
-        behavior: "auto",
-      });
+      const element = contentRef.current;
+      if (element !== null) {
+        element.scrollTo({
+          top: Math.max(0, element.scrollHeight - element.clientHeight),
+          behavior: "auto",
+        });
+      }
     });
-  }, []);
+  }, [contentRef]);
 
   useEffect(() => {
+    const element = contentRef.current;
+    if (element === null) {
+      return;
+    }
     const onScroll = (): void => {
       const next = controllerRef.current.observeUserScroll(metrics());
       setFollowing(next);
@@ -86,9 +92,9 @@ export function useStickyBottom(contentVersion: string): {
         frameRef.current = undefined;
       }
     };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, [metrics]);
+    element.addEventListener("scroll", onScroll, { passive: true });
+    return () => element.removeEventListener("scroll", onScroll);
+  }, [contentRef, metrics]);
 
   useEffect(() => {
     const element = contentRef.current;
@@ -97,8 +103,11 @@ export function useStickyBottom(contentVersion: string): {
     }
     const observer = new ResizeObserver(anchor);
     observer.observe(element);
+    for (const child of Array.from(element.children)) {
+      observer.observe(child);
+    }
     return () => observer.disconnect();
-  }, [anchor]);
+  }, [anchor, contentRef]);
 
   useEffect(() => {
     void contentVersion;
