@@ -21,6 +21,9 @@ interface ToolRecord {
   readonly title: string;
   readonly detail?: string;
   readonly target?: string;
+  readonly parentId?: string;
+  readonly subagentName?: string;
+  readonly background?: boolean;
 }
 
 export interface ToolPresentation {
@@ -28,13 +31,28 @@ export interface ToolPresentation {
   readonly title: string;
   readonly detail?: string;
   readonly target?: string;
+  readonly subagentName?: string;
+  readonly background?: boolean;
+}
+
+interface ThoughtStreamState {
+  readonly thoughtId: string;
+  readonly startedAt: number;
+  completed: boolean;
+}
+
+interface MessageStreamState {
+  readonly messageId: string;
+  readonly parentId?: string;
+  readonly thoughts: Map<number, ThoughtStreamState>;
+  assistantStarted: boolean;
 }
 
 export class QwenEventAdapter {
   private readonly tools = new Map<string, ToolRecord>();
   private readonly startedTools = new Set<string>();
-  private currentMessageId: string | undefined;
-  private sawPartialText = false;
+  private readonly streams = new Map<string, MessageStreamState>();
+  private readonly streamedMessageUuids = new Set<string>();
 
   adapt(message: SDKMessage): readonly AgentEvent[] {
     switch (message.type) {
@@ -56,54 +74,126 @@ export class QwenEventAdapter {
     const now = Date.now();
     const event = message.event;
     switch (event.type) {
-      case "message_start":
-        this.currentMessageId = event.message.id;
-        this.sawPartialText = false;
-        return [
-          {
-            type: "assistant.message.started",
-            messageId: event.message.id,
-            timestamp: now,
-          },
-        ];
+      case "message_start": {
+        const state: MessageStreamState = {
+          messageId: event.message.id,
+          ...(message.parent_tool_use_id === null
+            ? {}
+            : { parentId: message.parent_tool_use_id }),
+          thoughts: new Map(),
+          assistantStarted: false,
+        };
+        this.streams.set(streamKey(message), state);
+        this.streamedMessageUuids.add(event.message.id);
+        return [];
+      }
+      case "content_block_start": {
+        const state = this.ensureStream(message);
+        if (event.content_block.type !== "thinking") {
+          return [];
+        }
+        return this.startThought(
+          state,
+          event.index,
+          event.content_block.thinking,
+          now,
+        );
+      }
       case "content_block_delta":
+        if (event.delta.type === "thinking_delta") {
+          if (event.delta.thinking.length === 0) {
+            return [];
+          }
+          const state = this.ensureStream(message);
+          const events = this.startThought(state, event.index, "", now);
+          const thought = state.thoughts.get(event.index);
+          if (thought !== undefined) {
+            events.push({
+              type: "thinking.chunk",
+              thoughtId: thought.thoughtId,
+              text: event.delta.thinking,
+              ...(state.parentId === undefined
+                ? {}
+                : { parentId: state.parentId }),
+              timestamp: now,
+            });
+          }
+          return events;
+        }
         if (
           event.delta.type !== "text_delta" ||
           event.delta.text.length === 0
         ) {
           return [];
         }
-        this.sawPartialText = true;
-        return [
-          {
+        {
+          const state = this.ensureStream(message);
+          const events: AgentEvent[] = [];
+          if (!state.assistantStarted) {
+            state.assistantStarted = true;
+            events.push({
+              type: "assistant.message.started",
+              messageId: state.messageId,
+              ...(state.parentId === undefined
+                ? {}
+                : { parentId: state.parentId }),
+              timestamp: now,
+            });
+          }
+          events.push({
             type: "assistant.message.chunk",
-            messageId: this.currentMessageId ?? message.uuid,
+            messageId: state.messageId,
             text: event.delta.text,
+            ...(state.parentId === undefined
+              ? {}
+              : { parentId: state.parentId }),
             timestamp: now,
-          },
-        ];
-      case "message_stop": {
-        const messageId = this.currentMessageId ?? message.uuid;
-        this.currentMessageId = undefined;
-        return [
-          {
-            type: "assistant.message.completed",
-            messageId,
-            timestamp: now,
-          },
-        ];
+          });
+          return events;
+        }
+      case "content_block_stop": {
+        const state = this.ensureStream(message);
+        const thought = state.thoughts.get(event.index);
+        if (thought === undefined || thought.completed) {
+          return [];
+        }
+        thought.completed = true;
+        return [this.completeThought(state, thought, now)];
       }
-      case "content_block_start":
-      case "content_block_stop":
-        return [];
+      case "message_stop": {
+        const state = this.streams.get(streamKey(message));
+        if (state === undefined) {
+          return [];
+        }
+        const events: AgentEvent[] = [];
+        for (const thought of state.thoughts.values()) {
+          if (!thought.completed) {
+            thought.completed = true;
+            events.push(this.completeThought(state, thought, now));
+          }
+        }
+        if (state.assistantStarted) {
+          events.push({
+            type: "assistant.message.completed",
+            messageId: state.messageId,
+            ...(state.parentId === undefined
+              ? {}
+              : { parentId: state.parentId }),
+            timestamp: now,
+          });
+        }
+        this.streams.delete(streamKey(message));
+        return events;
+      }
     }
   }
 
   private adaptAssistant(message: SDKAssistantMessage): readonly AgentEvent[] {
     const events: AgentEvent[] = [];
-    const messageId = this.currentMessageId ?? message.uuid;
-    const hasStreamingMessage =
-      this.currentMessageId !== undefined || this.sawPartialText;
+    const stream = this.streams.get(streamKey(message));
+    const messageId = stream?.messageId ?? message.uuid;
+    const parentId = message.parent_tool_use_id ?? undefined;
+    const hasStreamingMessage = this.streamedMessageUuids.has(message.uuid);
     const content = message.message.content;
     const text = content
       .filter(
@@ -113,12 +203,63 @@ export class QwenEventAdapter {
       .map((block) => block.text)
       .join("");
     if (!hasStreamingMessage && text.length > 0) {
-      events.push(...this.completeTextMessage(messageId, text));
+      events.push(...this.completeTextMessage(messageId, text, parentId));
+    } else if (
+      hasStreamingMessage &&
+      stream?.assistantStarted === true &&
+      text.length > 0
+    ) {
+      events.push({
+        type: "assistant.message.completed",
+        messageId,
+        ...(parentId === undefined ? {} : { parentId }),
+        timestamp: Date.now(),
+      });
+    }
+    if (stream !== undefined) {
+      const now = Date.now();
+      for (const thought of stream.thoughts.values()) {
+        if (!thought.completed) {
+          thought.completed = true;
+          events.push(this.completeThought(stream, thought, now));
+        }
+      }
     }
 
-    for (const block of content) {
+    for (const [index, block] of content.entries()) {
+      if (block.type === "thinking" && !hasStreamingMessage) {
+        const now = Date.now();
+        const thoughtId = `${messageId}:thinking:${String(index)}`;
+        events.push({
+          type: "thinking.started",
+          thoughtId,
+          ...(parentId === undefined ? {} : { parentId }),
+          timestamp: now,
+        });
+        if (block.thinking.length > 0) {
+          events.push({
+            type: "thinking.chunk",
+            thoughtId,
+            text: block.thinking,
+            ...(parentId === undefined ? {} : { parentId }),
+            timestamp: now,
+          });
+        }
+        events.push({
+          type: "thinking.completed",
+          thoughtId,
+          ...(parentId === undefined ? {} : { parentId }),
+          durationMs: 0,
+          timestamp: now,
+        });
+      }
       if (block.type === "tool_use") {
-        const started = this.startTool(block.id, block.name, block.input);
+        const started = this.startTool(
+          block.id,
+          block.name,
+          block.input,
+          parentId,
+        );
         if (started !== undefined) {
           events.push(started);
         }
@@ -133,6 +274,8 @@ export class QwenEventAdapter {
         }
       }
     }
+    this.streams.delete(streamKey(message));
+    this.streamedMessageUuids.delete(message.uuid);
     return events;
   }
 
@@ -160,12 +303,29 @@ export class QwenEventAdapter {
   private completeTextMessage(
     messageId: string,
     text: string,
+    parentId: string | undefined,
   ): readonly AgentEvent[] {
     const now = Date.now();
     return [
-      { type: "assistant.message.started", messageId, timestamp: now },
-      { type: "assistant.message.chunk", messageId, text, timestamp: now },
-      { type: "assistant.message.completed", messageId, timestamp: now },
+      {
+        type: "assistant.message.started",
+        messageId,
+        ...(parentId === undefined ? {} : { parentId }),
+        timestamp: now,
+      },
+      {
+        type: "assistant.message.chunk",
+        messageId,
+        text,
+        ...(parentId === undefined ? {} : { parentId }),
+        timestamp: now,
+      },
+      {
+        type: "assistant.message.completed",
+        messageId,
+        ...(parentId === undefined ? {} : { parentId }),
+        timestamp: now,
+      },
     ];
   }
 
@@ -173,19 +333,94 @@ export class QwenEventAdapter {
     callId: string,
     toolName: string,
     rawInput: unknown,
+    parentId: string | undefined,
   ): ToolStartedEvent | undefined {
     if (this.startedTools.has(callId)) {
       return undefined;
     }
     const input = asToolInput(rawInput);
     const presentation = describeTool(toolName, input);
-    const record: ToolRecord = { callId, toolName, ...presentation };
+    const record: ToolRecord = {
+      callId,
+      toolName,
+      ...presentation,
+      ...(parentId === undefined ? {} : { parentId }),
+    };
     this.tools.set(callId, record);
     this.startedTools.add(callId);
     return {
       type: "tool.started",
       ...record,
       timestamp: Date.now(),
+    };
+  }
+
+  private ensureStream(
+    message: SDKPartialAssistantMessage,
+  ): MessageStreamState {
+    const key = streamKey(message);
+    const existing = this.streams.get(key);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const state: MessageStreamState = {
+      messageId: message.uuid,
+      ...(message.parent_tool_use_id === null
+        ? {}
+        : { parentId: message.parent_tool_use_id }),
+      thoughts: new Map(),
+      assistantStarted: false,
+    };
+    this.streams.set(key, state);
+    this.streamedMessageUuids.add(message.uuid);
+    return state;
+  }
+
+  private startThought(
+    state: MessageStreamState,
+    index: number,
+    initialText: string,
+    now: number,
+  ): AgentEvent[] {
+    let thought = state.thoughts.get(index);
+    const events: AgentEvent[] = [];
+    if (thought === undefined) {
+      thought = {
+        thoughtId: `${state.messageId}:thinking:${String(index)}`,
+        startedAt: now,
+        completed: false,
+      };
+      state.thoughts.set(index, thought);
+      events.push({
+        type: "thinking.started",
+        thoughtId: thought.thoughtId,
+        ...(state.parentId === undefined ? {} : { parentId: state.parentId }),
+        timestamp: now,
+      });
+    }
+    if (initialText.length > 0) {
+      events.push({
+        type: "thinking.chunk",
+        thoughtId: thought.thoughtId,
+        text: initialText,
+        ...(state.parentId === undefined ? {} : { parentId: state.parentId }),
+        timestamp: now,
+      });
+    }
+    return events;
+  }
+
+  private completeThought(
+    state: MessageStreamState,
+    thought: ThoughtStreamState,
+    now: number,
+  ): AgentEvent {
+    return {
+      type: "thinking.completed",
+      thoughtId: thought.thoughtId,
+      ...(state.parentId === undefined ? {} : { parentId: state.parentId }),
+      durationMs: Math.max(0, now - thought.startedAt),
+      timestamp: now,
     };
   }
 
@@ -207,6 +442,12 @@ export class QwenEventAdapter {
       timestamp: Date.now(),
     };
   }
+}
+
+function streamKey(message: {
+  readonly parent_tool_use_id: string | null;
+}): string {
+  return message.parent_tool_use_id ?? "main";
 }
 
 export function describeTool(
@@ -273,6 +514,20 @@ export function describeTool(
         : {
             detail: `${String(todos.length)} ${todos.length === 1 ? "item" : "items"}`,
           }),
+    };
+  }
+
+  if (normalized === "agent" || normalized === "task") {
+    const description = firstString(input.description, input.prompt);
+    const subagentName = firstString(input.subagent_type) ?? "general-purpose";
+    return {
+      kind: "subagent",
+      title: "Agent",
+      ...(description === undefined ? {} : { detail: description }),
+      subagentName,
+      ...(typeof input.run_in_background === "boolean"
+        ? { background: input.run_in_background }
+        : {}),
     };
   }
 

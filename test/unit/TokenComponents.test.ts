@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ContextUsageMeter } from "../../webview/src/ContextUsageMeter.js";
 import { TokenCount } from "../../webview/src/TokenCount.js";
+import { TurnUsageSummary } from "../../webview/src/TurnUsageSummary.js";
 
 describe("token metric components", () => {
   it("renders estimated and exact values with distinct labels", () => {
@@ -38,5 +39,24 @@ describe("token metric components", () => {
     expect(html).toContain("42.7k / 262.1k");
     expect(html).toContain("16.3%");
     expect(html).toContain('aria-valuenow="42731"');
+  });
+
+  it("renders authoritative turn totals separately from context usage", () => {
+    const html = renderToStaticMarkup(
+      createElement(TurnUsageSummary, {
+        usage: {
+          inputTokens: 71_800,
+          outputTokens: 3_600,
+          cacheReadInputTokens: 52_400,
+          cacheCreationInputTokens: 0,
+          totalTokens: 75_400,
+          accuracy: "exact",
+        },
+      }),
+    );
+    expect(html).toContain("71.8k input");
+    expect(html).toContain("3.6k output");
+    expect(html).toContain("Cache read: 52,400");
+    expect(html).not.toContain("262.1k");
   });
 });

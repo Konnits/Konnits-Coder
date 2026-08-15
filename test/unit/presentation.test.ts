@@ -6,11 +6,13 @@ import type {
 } from "../../src/webview/messages.js";
 import {
   activitySummary,
+  buildActivityTree,
   buildConversationView,
   initialProcessingExpansion,
   isActivityExpanded,
   processingSummary,
   setProcessingExpanded,
+  thoughtTitle,
   toggleActivityExpansion,
   updateProcessingExpansion,
 } from "../../webview/src/presentation.js";
@@ -32,7 +34,7 @@ describe("processing presentation", () => {
     ).toBe("src/foo.ts");
   });
 
-  it("auto-collapses completion, respects overrides, and expands attention states", () => {
+  it("auto-collapses completion and never overwrites manual preferences", () => {
     const running = initialProcessingExpansion("working");
     expect(running.expanded).toBe(true);
     expect(updateProcessingExpansion(running, "completed").expanded).toBe(
@@ -49,7 +51,49 @@ describe("processing presentation", () => {
     expect(
       updateProcessingExpansion(setProcessingExpanded(running, false), "failed")
         .expanded,
+    ).toBe(false);
+    expect(
+      updateProcessingExpansion(
+        setProcessingExpanded(running, false),
+        "waiting",
+      ).expanded,
+    ).toBe(false);
+  });
+
+  it("defaults active thoughts open, completed thoughts closed, and preserves manual overrides", () => {
+    const active = {
+      type: "thinking" as const,
+      id: "thought-1",
+      text: "Inspecting",
+      complete: false,
+      startedAt: 1_000,
+    };
+    expect(isActivityExpanded({}, active)).toBe(true);
+    const collapsed = toggleActivityExpansion({}, active);
+    expect(isActivityExpanded(collapsed, { ...active, complete: true })).toBe(
+      false,
+    );
+    const completed = { ...active, complete: true, durationMs: 3_000 };
+    expect(isActivityExpanded({}, completed)).toBe(false);
+    expect(
+      isActivityExpanded(toggleActivityExpansion({}, completed), completed),
     ).toBe(true);
+    expect(thoughtTitle(completed)).toBe("∴ Thought for 3s");
+  });
+
+  it("builds nested subagent activity from authoritative parent IDs", () => {
+    const agent: ToolTimelineItem = {
+      type: "tool",
+      id: "agent-1",
+      kind: "subagent",
+      title: "Agent",
+      state: "running",
+    };
+    const child = { ...tool("child"), parentId: "agent-1" };
+    const roots = buildActivityTree([agent, child]);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.item.id).toBe("agent-1");
+    expect(roots[0]?.children[0]?.item.id).toBe("child");
   });
 
   it("preserves independent nested activity expansion", () => {

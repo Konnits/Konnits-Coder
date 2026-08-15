@@ -7,6 +7,7 @@ import {
   type Query,
   type QueryOptions,
   type SDKAssistantMessage,
+  type SDKMessage,
   type SDKResultMessage,
   type SDKUserMessage,
   type Usage,
@@ -37,6 +38,7 @@ import {
   aggregateQwenCallUsages,
 } from "./QwenTokenUsageAdapter.js";
 import type { TurnTokenUsage } from "../agent/TokenUsage.js";
+import { ContextUsageRefreshScheduler } from "./ContextUsageRefreshScheduler.js";
 
 export interface QwenClientConfiguration {
   readonly executablePath?: string;
@@ -127,6 +129,7 @@ export class QwenCodeAgentClient implements AgentClient {
       try {
         executionResult = await this.executeQuery(
           request,
+          runId,
           abortController,
           request.resume,
           diagnostics,
@@ -140,6 +143,7 @@ export class QwenCodeAgentClient implements AgentClient {
           diagnostics.clear();
           executionResult = await this.executeQuery(
             request,
+            runId,
             abortController,
             false,
             diagnostics,
@@ -260,6 +264,7 @@ export class QwenCodeAgentClient implements AgentClient {
 
   private async executeQuery(
     request: AgentRunRequest,
+    runId: string,
     abortController: AbortController,
     resume: boolean,
     diagnostics: QwenDiagnosticCapture,
@@ -274,35 +279,77 @@ export class QwenCodeAgentClient implements AgentClient {
     const prompt = createControlledPrompt(request.prompt, request.sessionId);
     const activeQuery = this.queryFactory({ prompt: prompt.messages, options });
     this.activeQuery = activeQuery;
+    const contextRefresh = new ContextUsageRefreshScheduler(() =>
+      this.refreshContextUsage(activeQuery, request.sessionId),
+    );
     let resultText: string | undefined;
     let resultUsage: TurnTokenUsage | undefined;
-    const callUsages: Usage[] = [];
+    let lastEmittedTurnUsage: TurnTokenUsage | undefined;
+    const callUsages = new Map<string, Usage>();
+    contextRefresh.schedule();
 
     try {
       for await (const message of activeQuery) {
-        for (const event of adapter.adapt(message)) {
+        if (this.configuration().debug) {
+          this.logger.debug(describeSdkMessageForDebug(message));
+        }
+        const events = adapter.adapt(message);
+        for (const event of events) {
           this.emit(event);
           if (event.type === "tool.completed" && event.target !== undefined) {
             await this.changes.afterEdit(event.target);
           }
         }
+        if (events.some(isContextRefreshBoundary)) {
+          contextRefresh.schedule();
+        }
         if (message.type === "assistant") {
           const usage = readAssistantUsage(message);
           if (usage !== undefined) {
-            callUsages.push(usage);
+            callUsages.set(message.uuid, usage);
+            const cumulative = aggregateQwenCallUsages([
+              ...callUsages.values(),
+            ]);
+            if (
+              cumulative !== undefined &&
+              !sameTurnUsage(cumulative, lastEmittedTurnUsage)
+            ) {
+              lastEmittedTurnUsage = cumulative;
+              this.emit({
+                type: "turn.usage.updated",
+                runId,
+                usage: cumulative,
+                timestamp: Date.now(),
+              });
+            }
           }
+          contextRefresh.schedule();
         }
         if (message.type === "result") {
           resultText = this.readResult(message);
           resultUsage = adaptQwenTurnUsage(message.usage);
-          await this.refreshContextUsage(activeQuery, request.sessionId);
+          if (
+            resultUsage !== undefined &&
+            !sameTurnUsage(resultUsage, lastEmittedTurnUsage)
+          ) {
+            lastEmittedTurnUsage = resultUsage;
+            this.emit({
+              type: "turn.usage.updated",
+              runId,
+              usage: resultUsage,
+              timestamp: Date.now(),
+            });
+          }
+          await contextRefresh.flush();
           prompt.finish();
         }
       }
     } finally {
+      contextRefresh.stop();
       prompt.finish();
     }
-    const turnUsage = resultUsage ?? aggregateQwenCallUsages(callUsages);
+    const turnUsage =
+      resultUsage ?? aggregateQwenCallUsages([...callUsages.values()]);
     if (turnUsage !== undefined) {
       this.logger.debug(
         `Turn usage: input=${String(turnUsage.inputTokens)} output=${String(turnUsage.outputTokens)} cacheRead=${String(turnUsage.cacheReadInputTokens)} cacheCreation=${String(turnUsage.cacheCreationInputTokens)}.`,
@@ -461,7 +508,64 @@ function createControlledPrompt(
 }
 
 function readAssistantUsage(message: SDKAssistantMessage): Usage | undefined {
-  return message.message.usage;
+  const usage = (message.message as { readonly usage?: Usage }).usage;
+  if (usage === undefined) {
+    return undefined;
+  }
+  const reportedTokens =
+    usage.input_tokens +
+    usage.output_tokens +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0);
+  // The bundled CLI emits zero-filled placeholder usage when it splits one
+  // model response into thinking/tool/text assistant messages.
+  return reportedTokens === 0 ? undefined : usage;
+}
+
+function isContextRefreshBoundary(event: AgentEvent): boolean {
+  return (
+    event.type === "assistant.message.completed" ||
+    event.type === "thinking.completed" ||
+    event.type === "tool.started" ||
+    event.type === "tool.completed"
+  );
+}
+
+function sameTurnUsage(
+  left: TurnTokenUsage,
+  right: TurnTokenUsage | undefined,
+): boolean {
+  return (
+    right !== undefined &&
+    left.inputTokens === right.inputTokens &&
+    left.outputTokens === right.outputTokens &&
+    left.cacheReadInputTokens === right.cacheReadInputTokens &&
+    left.cacheCreationInputTokens === right.cacheCreationInputTokens &&
+    left.totalTokens === right.totalTokens
+  );
+}
+
+export function describeSdkMessageForDebug(message: SDKMessage): string {
+  const parent =
+    "parent_tool_use_id" in message && message.parent_tool_use_id !== null
+      ? "yes"
+      : "no";
+  if (message.type === "stream_event") {
+    const detail =
+      message.event.type === "content_block_delta"
+        ? ` delta=${message.event.delta.type}`
+        : message.event.type === "content_block_start"
+          ? ` block=${message.event.content_block.type}`
+          : "";
+    return `Qwen SDK event: type=stream_event event=${message.event.type}${detail} parent=${parent}.`;
+  }
+  if (message.type === "assistant") {
+    const blockTypes = message.message.content
+      .map((block) => block.type)
+      .join(",");
+    return `Qwen SDK event: type=assistant blocks=[${blockTypes}] usage=yes parent=${parent}.`;
+  }
+  return `Qwen SDK event: type=${message.type} parent=${parent}.`;
 }
 
 interface QwenCliLaunch {

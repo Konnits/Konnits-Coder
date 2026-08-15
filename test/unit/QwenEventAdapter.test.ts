@@ -1,5 +1,5 @@
 import type { SDKMessage } from "@qwen-code/sdk";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   describeTool,
   QwenEventAdapter,
@@ -31,6 +31,109 @@ describe("QwenEventAdapter", () => {
       "assistant.message.completed",
     ]);
     expect(events[1]).toMatchObject({ messageId: "m1", text: "Hello" });
+  });
+
+  it("completes streamed text once when the full assistant precedes message_stop", () => {
+    const adapter = new QwenEventAdapter();
+    const events = [
+      adapter.adapt(
+        partial({
+          type: "message_start",
+          message: { id: "m-real-order", role: "assistant", model: "qwen" },
+        }),
+      ),
+      adapter.adapt(
+        partial({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hello" },
+        }),
+      ),
+      adapter.adapt(
+        assistant([{ type: "text", text: "Hello" }], null, "m-real-order"),
+      ),
+      adapter.adapt(partial({ type: "message_stop" })),
+    ].flat();
+
+    expect(events.map((event) => event.type)).toEqual([
+      "assistant.message.started",
+      "assistant.message.chunk",
+      "assistant.message.completed",
+    ]);
+    expect(
+      events.filter((event) => event.type === "assistant.message.chunk"),
+    ).toHaveLength(1);
+  });
+
+  it("streams thinking separately, measures its lifetime, and avoids complete-message duplication", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000);
+      const adapter = new QwenEventAdapter();
+      const events = [
+        adapter.adapt(
+          partial({
+            type: "message_start",
+            message: { id: "m-thought", role: "assistant", model: "qwen" },
+          }),
+        ),
+        adapter.adapt(
+          partial({
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "thinking", thinking: "Inspect " },
+          }),
+        ),
+        adapter.adapt(
+          partial({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "thinking_delta", thinking: "the code." },
+          }),
+        ),
+      ].flat();
+      vi.setSystemTime(3_500);
+      events.push(
+        ...adapter.adapt(partial({ type: "content_block_stop", index: 0 })),
+        ...adapter.adapt(partial({ type: "message_stop" })),
+        ...adapter.adapt(
+          assistant(
+            [{ type: "thinking", thinking: "Inspect the code." }],
+            null,
+            "m-thought",
+          ),
+        ),
+      );
+
+      expect(events.map((event) => event.type)).toEqual([
+        "thinking.started",
+        "thinking.chunk",
+        "thinking.chunk",
+        "thinking.completed",
+      ]);
+      expect(events[3]).toMatchObject({ durationMs: 2_500 });
+      expect(events).not.toContainEqual(
+        expect.objectContaining({ type: "assistant.message.chunk" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("adapts non-streamed thinking without mixing it into assistant text", () => {
+    const events = new QwenEventAdapter().adapt(
+      assistant([
+        { type: "thinking", thinking: "Reasoning only" },
+        { type: "text", text: "Final text" },
+      ]),
+    );
+
+    expect(
+      events.filter((event) => event.type.startsWith("thinking.")),
+    ).toHaveLength(3);
+    expect(
+      events.find((event) => event.type === "assistant.message.chunk"),
+    ).toMatchObject({ text: "Final text" });
   });
 
   it("normalizes edit tool start and completion", () => {
@@ -112,26 +215,77 @@ describe("QwenEventAdapter", () => {
       detail: "3 items",
     });
   });
+
+  it("maps Qwen agent calls and preserves child parent IDs", () => {
+    const adapter = new QwenEventAdapter();
+    const [agent] = adapter.adapt(
+      assistant([
+        {
+          type: "tool_use",
+          id: "agent-1",
+          name: "agent",
+          input: {
+            description: "Deep repo analysis",
+            subagent_type: "general-purpose",
+          },
+        },
+      ]),
+    );
+    const [child] = adapter.adapt(
+      assistant(
+        [
+          {
+            type: "tool_use",
+            id: "read-child",
+            name: "read_file",
+            input: { file_path: "package.json" },
+          },
+        ],
+        "agent-1",
+        "child-message",
+      ),
+    );
+
+    expect(agent).toMatchObject({
+      type: "tool.started",
+      callId: "agent-1",
+      kind: "subagent",
+      title: "Agent",
+      detail: "Deep repo analysis",
+      subagentName: "general-purpose",
+    });
+    expect(child).toMatchObject({
+      type: "tool.started",
+      callId: "read-child",
+      parentId: "agent-1",
+    });
+  });
 });
 
 function partial(event: unknown): SDKMessage {
   return {
     type: "stream_event",
-    uuid: "stream-1",
+    uuid: `stream-envelope-${String((partialSequence += 1))}`,
     session_id: "session-1",
     parent_tool_use_id: null,
     event,
   } as SDKMessage;
 }
 
-function assistant(content: unknown[]): SDKMessage {
+let partialSequence = 0;
+
+function assistant(
+  content: unknown[],
+  parentToolUseId: string | null = null,
+  uuid = "assistant-1",
+): SDKMessage {
   return {
     type: "assistant",
-    uuid: "assistant-1",
+    uuid,
     session_id: "session-1",
-    parent_tool_use_id: null,
+    parent_tool_use_id: parentToolUseId,
     message: {
-      id: "assistant-1",
+      id: uuid,
       type: "message",
       role: "assistant",
       model: "qwen",

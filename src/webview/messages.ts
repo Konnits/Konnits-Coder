@@ -30,6 +30,17 @@ export interface AssistantTimelineItem {
   readonly id: string;
   readonly text: string;
   readonly complete: boolean;
+  readonly parentId?: string;
+}
+
+export interface ThinkingTimelineItem {
+  readonly type: "thinking";
+  readonly id: string;
+  readonly text: string;
+  readonly complete: boolean;
+  readonly startedAt: number;
+  readonly durationMs?: number;
+  readonly parentId?: string;
 }
 
 export interface FinalResponseTimelineItem {
@@ -48,6 +59,15 @@ export interface ToolTimelineItem {
   readonly detail?: string;
   readonly state: "running" | "succeeded" | "failed";
   readonly output?: string;
+  readonly parentId?: string;
+  readonly subagentName?: string;
+  readonly background?: boolean;
+}
+
+export interface TurnUsageTimelineItem {
+  readonly type: "turnUsage";
+  readonly id: string;
+  readonly usage: TurnTokenUsage;
 }
 
 export interface ErrorTimelineItem {
@@ -59,8 +79,10 @@ export interface ErrorTimelineItem {
 export type TimelineItem =
   | UserTimelineItem
   | AssistantTimelineItem
+  | ThinkingTimelineItem
   | FinalResponseTimelineItem
   | ToolTimelineItem
+  | TurnUsageTimelineItem
   | ErrorTimelineItem;
 
 export interface ChangeViewModel {

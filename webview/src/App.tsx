@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   AppState,
   ChangeViewModel,
@@ -13,6 +13,8 @@ import {
   type StandaloneTimelineViewModel,
 } from "./presentation.js";
 import { vscode } from "./vscode.js";
+import { useStickyBottom } from "./stickyBottom.js";
+import { PermissionCard } from "./PermissionCard.js";
 
 const initialState: AppState = {
   status: "idle",
@@ -26,8 +28,6 @@ const initialState: AppState = {
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState>(initialState);
   const [prompt, setPrompt] = useState("");
-  const endRef = useRef<HTMLDivElement>(null);
-  const shouldAutoScrollRef = useRef(true);
   const busy = useMemo(
     () =>
       state.status === "connecting" ||
@@ -43,11 +43,17 @@ export function App(): React.JSX.Element {
           if (item.type === "assistant") {
             return `${item.type}:${item.id}:${String(item.text.length)}:${String(item.complete)}`;
           }
+          if (item.type === "thinking") {
+            return `${item.type}:${item.id}:${String(item.text.length)}:${String(item.complete)}`;
+          }
           if (item.type === "finalResponse" || item.type === "user") {
             return `${item.type}:${item.id}:${String(item.text.length)}`;
           }
           if (item.type === "tool") {
             return `${item.type}:${item.id}:${item.state}`;
+          }
+          if (item.type === "turnUsage") {
+            return `${item.type}:${item.id}:${String(item.usage.totalTokens)}`;
           }
           return `${item.type}:${item.id}:${String(item.message.length)}`;
         })
@@ -57,6 +63,9 @@ export function App(): React.JSX.Element {
   const permissionScrollKey = useMemo(
     () => state.permissions.map((permission) => permission.id).join("|"),
     [state.permissions],
+  );
+  const { contentRef, following, jumpToLatest } = useStickyBottom(
+    `${timelineScrollKey}|${permissionScrollKey}|${state.status}|${String(state.changes.length)}`,
   );
 
   useEffect(() => {
@@ -69,24 +78,6 @@ export function App(): React.JSX.Element {
     vscode.postMessage({ type: "ready" });
     return () => window.removeEventListener("message", listener);
   }, []);
-
-  useEffect(() => {
-    const updateAutoScroll = (): void => {
-      const remaining =
-        document.documentElement.scrollHeight -
-        window.innerHeight -
-        window.scrollY;
-      shouldAutoScrollRef.current = remaining < 80;
-    };
-    window.addEventListener("scroll", updateAutoScroll, { passive: true });
-    return () => window.removeEventListener("scroll", updateAutoScroll);
-  }, []);
-
-  useEffect(() => {
-    if (shouldAutoScrollRef.current) {
-      endRef.current?.scrollIntoView({ block: "end" });
-    }
-  }, [timelineScrollKey, permissionScrollKey, state.status]);
 
   const conversation = useMemo(
     () => buildConversationView(state.timeline, state.status),
@@ -105,7 +96,7 @@ export function App(): React.JSX.Element {
   };
 
   return (
-    <main className="app">
+    <main className="app" ref={contentRef}>
       <div className="connection-header">
         <header className="status-bar">
           <span
@@ -177,51 +168,25 @@ export function App(): React.JSX.Element {
           ),
         )}
         {state.permissions.map((permission) => (
-          <section
-            className={`permission permission-${permission.risk}`}
+          <PermissionCard
             key={permission.id}
-            aria-live="assertive"
-          >
-            <div className="eyebrow">
-              {permission.risk === "dangerous"
-                ? "Potentially destructive"
-                : permission.risk === "command"
-                  ? "Command permission"
-                  : "Write permission"}
-            </div>
-            <strong>{permission.title}</strong>
-            {permission.detail !== undefined && (
-              <code>{permission.detail}</code>
-            )}
-            <div className="button-row">
-              <button
-                className="primary"
-                onClick={() =>
-                  vscode.postMessage({
-                    type: "resolvePermission",
-                    id: permission.id,
-                    decision: "allow",
-                  })
-                }
-              >
-                Allow
-              </button>
-              <button
-                onClick={() =>
-                  vscode.postMessage({
-                    type: "resolvePermission",
-                    id: permission.id,
-                    decision: "deny",
-                  })
-                }
-              >
-                Deny
-              </button>
-            </div>
-          </section>
+            permission={permission}
+            onDecision={(decision) =>
+              vscode.postMessage({
+                type: "resolvePermission",
+                id: permission.id,
+                decision,
+              })
+            }
+          />
         ))}
-        <div ref={endRef} />
       </section>
+
+      {!following && (
+        <button className="jump-latest" type="button" onClick={jumpToLatest}>
+          ↓ Jump to latest
+        </button>
+      )}
 
       {state.changes.length > 0 && <ChangedFiles changes={state.changes} />}
 
@@ -364,6 +329,9 @@ function StandaloneEntry({
           <p>{item.message}</p>
         </article>
       );
+    case "thinking":
+    case "turnUsage":
+      return null;
   }
 }
 

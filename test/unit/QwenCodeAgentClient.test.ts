@@ -4,6 +4,7 @@ import type { AgentEvent } from "../../src/agent/AgentEvent.js";
 import { PermissionManager } from "../../src/permissions/PermissionManager.js";
 import {
   QwenCodeAgentClient,
+  describeSdkMessageForDebug,
   resolveCliLaunch,
   type QwenChangeTracker,
   type QwenQueryFactory,
@@ -47,6 +48,22 @@ describe("QwenCodeAgentClient", () => {
     expect(firstMessage.value.message.content).not.toBe(
       requests[0]?.options?.pathToQwenExecutable,
     );
+  });
+
+  it("enables partial messages without restricting Qwen's agent tool", async () => {
+    const requests: Parameters<QwenQueryFactory>[0][] = [];
+    const client = createClient(
+      vi.fn(((request) => {
+        requests.push(request);
+        return successfulQuery();
+      }) as QwenQueryFactory),
+    );
+
+    await client.run(runRequest());
+
+    expect(requests[0]?.options?.includePartialMessages).toBe(true);
+    expect(requests[0]?.options?.coreTools).toBeUndefined();
+    expect(requests[0]?.options?.excludeTools).toBeUndefined();
   });
 
   it("uses the Electron bootstrap only for JavaScript CLIs on Windows", () => {
@@ -125,6 +142,53 @@ describe("QwenCodeAgentClient", () => {
     ).toMatchObject({ inputTokens: 39_023, outputTokens: 196 });
   });
 
+  it("emits cumulative per-call usage progressively without double-counting message IDs", async () => {
+    const client = createClient(
+      vi.fn((() => progressiveUsageQuery()) as QwenQueryFactory),
+    );
+    const usages: AgentEvent[] = [];
+    client.onEvent((event) => {
+      if (event.type === "turn.usage.updated") {
+        usages.push(event);
+      }
+    });
+
+    await client.run(runRequest());
+
+    expect(
+      usages.map((event) =>
+        event.type === "turn.usage.updated"
+          ? [event.usage.inputTokens, event.usage.outputTokens]
+          : [],
+      ),
+    ).toEqual([
+      [10, 2],
+      [30, 5],
+    ]);
+  });
+
+  it("refreshes context after a tool boundary before the final result", async () => {
+    let resultReached = false;
+    const observations: boolean[] = [];
+    const query = fakeQuery(
+      async function* () {
+        yield assistantToolMessage();
+        await new Promise((resolve) => setTimeout(resolve, 650));
+        resultReached = true;
+        yield resultMessage("done");
+      },
+      async () => {
+        observations.push(resultReached);
+        return null;
+      },
+    );
+    const client = createClient(vi.fn((() => query) as QwenQueryFactory));
+
+    await client.run(runRequest());
+
+    expect(observations).toContain(false);
+  });
+
   it("does not fail a turn when context retrieval fails", async () => {
     const queryFactory = vi.fn((() =>
       successfulQuery(async () => {
@@ -169,6 +233,47 @@ describe("QwenCodeAgentClient", () => {
     expect(interrupt).toHaveBeenCalledOnce();
     expect(events).toContain("agent.cancelled");
     expect(events).not.toContain("agent.completed");
+  });
+
+  it("keeps the parent turn running after a foreground subagent result", async () => {
+    const client = createClient(
+      vi.fn((() => subagentLoopQuery()) as QwenQueryFactory),
+    );
+    const events: AgentEvent[] = [];
+    client.onEvent((event) => events.push(event));
+
+    await client.run(runRequest());
+
+    const agentCompletedIndex = events.findIndex(
+      (event) => event.type === "tool.completed" && event.callId === "agent-1",
+    );
+    const parentTextIndex = events.findIndex(
+      (event) =>
+        event.type === "assistant.message.chunk" &&
+        event.text === "Parent summary",
+    );
+    expect(agentCompletedIndex).toBeGreaterThanOrEqual(0);
+    expect(parentTextIndex).toBeGreaterThan(agentCompletedIndex);
+    expect(events.at(-1)?.type).toBe("agent.completed");
+  });
+
+  it("logs only event structure in debug diagnostics", () => {
+    const message = {
+      type: "stream_event",
+      uuid: "secret-prompt",
+      session_id: "session",
+      parent_tool_use_id: "agent-1",
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "sensitive reasoning" },
+      },
+    } as SDKMessage;
+    const diagnostic = describeSdkMessageForDebug(message);
+    expect(diagnostic).toContain("delta=thinking_delta");
+    expect(diagnostic).toContain("parent=yes");
+    expect(diagnostic).not.toContain("sensitive reasoning");
+    expect(diagnostic).not.toContain("secret-prompt");
   });
 
   it("retries a missing persisted session once as a new session", async () => {
@@ -285,6 +390,160 @@ function usageQuery(): Query {
       isEstimated: false,
     }),
   );
+}
+
+function progressiveUsageQuery(): Query {
+  return fakeQuery(async function* () {
+    yield assistantUsageMessage("call-1", 10, 2);
+    yield assistantUsageMessage("call-1", 10, 2);
+    yield assistantUsageMessage("call-2", 20, 3);
+    yield {
+      ...resultMessage("done"),
+      usage: { input_tokens: 30, output_tokens: 5, total_tokens: 35 },
+    } as SDKMessage;
+  });
+}
+
+function assistantUsageMessage(
+  uuid: string,
+  inputTokens: number,
+  outputTokens: number,
+): SDKMessage {
+  return {
+    type: "assistant",
+    uuid,
+    session_id: "session",
+    parent_tool_use_id: null,
+    message: {
+      id: uuid,
+      type: "message",
+      role: "assistant",
+      model: "qwen",
+      content: [],
+      usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+    },
+  } as SDKMessage;
+}
+
+function assistantToolMessage(): SDKMessage {
+  return {
+    type: "assistant",
+    uuid: "assistant-tool-boundary",
+    session_id: "session",
+    parent_tool_use_id: null,
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "tool-boundary",
+          name: "read_file",
+          input: { file_path: "README.md" },
+        },
+      ],
+    },
+  } as SDKMessage;
+}
+
+function resultMessage(result: string): SDKMessage {
+  return {
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result,
+  } as SDKMessage;
+}
+
+function subagentLoopQuery(): Query {
+  return fakeQuery(async function* () {
+    yield {
+      type: "assistant",
+      uuid: "parent-agent-call",
+      session_id: "session",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "agent-1",
+            name: "agent",
+            input: {
+              description: "Architecture analysis",
+              subagent_type: "general-purpose",
+            },
+          },
+        ],
+      },
+    } as SDKMessage;
+    yield {
+      type: "assistant",
+      uuid: "child-read-call",
+      session_id: "session",
+      parent_tool_use_id: "agent-1",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "child-read",
+            name: "read_file",
+            input: { file_path: "package.json" },
+          },
+        ],
+      },
+    } as SDKMessage;
+    yield {
+      type: "user",
+      session_id: "session",
+      parent_tool_use_id: "agent-1",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "child-read",
+            content: "package contents",
+          },
+        ],
+      },
+    } as SDKMessage;
+    yield {
+      type: "user",
+      session_id: "session",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "agent-1",
+            content: "child result",
+          },
+        ],
+      },
+    } as SDKMessage;
+    yield {
+      type: "assistant",
+      uuid: "parent-final",
+      session_id: "session",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Parent summary" }],
+      },
+    } as SDKMessage;
+    yield resultMessage("Parent summary");
+  });
+}
+
+function runRequest() {
+  return {
+    prompt: "hello",
+    workspacePath: "C:\\workspace",
+    sessionId: "session",
+    resume: false,
+  };
 }
 
 function toolLoopQuery(): Query {

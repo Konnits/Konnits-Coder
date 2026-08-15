@@ -90,7 +90,7 @@ describe("QwenCodeAgentClient live integration", () => {
       const contexts = events.filter(
         (event) => event.type === "context.usage.updated",
       );
-      expect(contexts).toHaveLength(3);
+      expect(contexts.length).toBeGreaterThanOrEqual(3);
       for (const context of contexts) {
         expect(context.sessionId).toBe(sessionId);
         expect(context.usage.usedTokens).toBeGreaterThanOrEqual(0);
@@ -108,9 +108,118 @@ describe("QwenCodeAgentClient live integration", () => {
         expect(completion.turnUsage?.inputTokens).toBeGreaterThan(0);
         expect(completion.turnUsage?.outputTokens).toBeGreaterThan(0);
       }
+      expect(events.some((event) => event.type === "turn.usage.updated")).toBe(
+        true,
+      );
       expect(
         info.filter((message) => message.includes("retrying once")),
       ).toHaveLength(1);
+      if (process.env.QWEN_LIVE_REPORT === "1") {
+        console.info(
+          JSON.stringify({
+            turns: [firstTurn, secondTurn, thirdTurn].map((turn) => ({
+              contextUpdates: turn.filter(
+                (event) => event.type === "context.usage.updated",
+              ).length,
+              distinctContextValues: [
+                ...new Set(
+                  turn.flatMap((event) =>
+                    event.type === "context.usage.updated"
+                      ? [event.usage.usedTokens]
+                      : [],
+                  ),
+                ),
+              ].length,
+              turnUsageUpdates: turn.filter(
+                (event) => event.type === "turn.usage.updated",
+              ).length,
+              toolCompletions: turn.filter(
+                (event) => event.type === "tool.completed",
+              ).length,
+            })),
+          }),
+        );
+      }
+    },
+  );
+
+  liveIt(
+    "exposes real Qwen thinking and foreground subagent lifecycle",
+    { timeout: 600_000 },
+    async () => {
+      const events: AgentEvent[] = [];
+      const permissions = new PermissionManager();
+      permissions.onDidChange(() => {
+        for (const request of permissions.list()) {
+          permissions.resolve(
+            request.id,
+            request.toolName.toLowerCase() === "agent" ? "allow" : "deny",
+          );
+        }
+      });
+      const client = new QwenCodeAgentClient(
+        () => ({ debug: false }),
+        permissions,
+        {
+          beforeEdit: async () => undefined,
+          afterEdit: async () => undefined,
+          completeAll: async () => undefined,
+        },
+        {
+          debug: () => undefined,
+          info: () => undefined,
+          error: () => undefined,
+        },
+      );
+      client.onEvent((event) => events.push(event));
+      await client.connect();
+
+      await client.run({
+        prompt: "Puedes llamar a subagentes? Responde brevemente.",
+        workspacePath: process.cwd(),
+        sessionId: randomUUID(),
+        resume: false,
+      });
+      const thinkingTurnEnd = events.length;
+      const thinkingTurn = events.slice(0, thinkingTurnEnd);
+      expect(
+        thinkingTurn.some((event) => event.type === "thinking.chunk"),
+      ).toBe(true);
+      expect(
+        thinkingTurn.some((event) => event.type === "thinking.completed"),
+      ).toBe(true);
+
+      await client.run({
+        prompt:
+          "Usa explícitamente un subagente general-purpose para realizar un análisis profundo de este repositorio. El agente principal no debe hacer el análisis por sí mismo. El subagente debe usar sus herramientas para leer package.json y src/extension.ts como evidencia. Espera el resultado del subagente y luego resúmelo. No modifiques archivos.",
+        workspacePath: process.cwd(),
+        sessionId: randomUUID(),
+        resume: false,
+      });
+      await client.dispose();
+
+      const subagentTurn = events.slice(thinkingTurnEnd);
+      const agentStart = subagentTurn.find(
+        (event) => event.type === "tool.started" && event.kind === "subagent",
+      );
+      expect(agentStart?.type).toBe("tool.started");
+      if (agentStart?.type !== "tool.started") {
+        return;
+      }
+      expect(agentStart.subagentName).toBe("general-purpose");
+      const agentCompletionIndex = subagentTurn.findIndex(
+        (event) =>
+          event.type === "tool.completed" && event.callId === agentStart.callId,
+      );
+      const parentContinuationIndex = subagentTurn.findIndex(
+        (event, index) =>
+          index > agentCompletionIndex &&
+          event.type === "assistant.message.chunk" &&
+          event.parentId === undefined,
+      );
+      expect(agentCompletionIndex).toBeGreaterThanOrEqual(0);
+      expect(parentContinuationIndex).toBeGreaterThan(agentCompletionIndex);
+      expect(subagentTurn.at(-1)?.type).toBe("agent.completed");
     },
   );
 });

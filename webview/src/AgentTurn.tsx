@@ -33,6 +33,7 @@ export function AgentTurn({
             turnId={turn.id}
             activities={turn.activities}
             status={turn.status}
+            turnUsage={turn.turnUsage?.usage}
             workspacePath={workspacePath}
             onOpenLink={onOpenLink}
           />

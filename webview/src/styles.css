@@ -378,6 +378,13 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.turn-usage {
+  display: block;
+  margin-top: 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+}
+
 .processing-items {
   padding: 0 5px 5px;
   border-top: 1px solid
@@ -438,6 +445,36 @@ pre {
   color: var(--vscode-foreground);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.thought-details {
+  max-height: 220px;
+  overflow-y: auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.94em;
+}
+
+.thought-details .markdown-message h1,
+.thought-details .markdown-message h2,
+.thought-details .markdown-message h3 {
+  font-size: 1em;
+}
+
+.nested-activities {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid
+    color-mix(in srgb, var(--vscode-widget-border) 70%, transparent);
+}
+
+.nested-activities .activity-details {
+  padding-left: 26px;
+}
+
+.subagent-name {
+  display: block;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
 }
 
 .activity-state-label {
@@ -727,6 +764,15 @@ pre {
   background: var(--vscode-sideBar-background);
   border-top: 1px solid
     var(--vscode-sideBar-border, var(--vscode-widget-border));
+}
+
+.jump-latest {
+  position: sticky;
+  bottom: 104px;
+  z-index: 3;
+  width: fit-content;
+  margin: 0 auto 8px;
+  box-shadow: 0 2px 7px var(--vscode-widget-shadow);
 }
 
 .composer textarea {

@@ -3,12 +3,17 @@ import type {
   ErrorTimelineItem,
   ExecutionStatus,
   FinalResponseTimelineItem,
+  ThinkingTimelineItem,
   TimelineItem,
+  TurnUsageTimelineItem,
   ToolTimelineItem,
   UserTimelineItem,
 } from "../../src/webview/messages.js";
 
-export type ProcessingActivity = AssistantTimelineItem | ToolTimelineItem;
+export type ProcessingActivity =
+  | AssistantTimelineItem
+  | ThinkingTimelineItem
+  | ToolTimelineItem;
 export type ProcessingStatus =
   | "working"
   | "waiting"
@@ -23,6 +28,7 @@ export interface AgentTurnViewModel {
   readonly user: UserTimelineItem;
   readonly activities: readonly ProcessingActivity[];
   readonly finalResponse?: FinalResponseTimelineItem;
+  readonly turnUsage?: TurnUsageTimelineItem;
   readonly errors: readonly ErrorTimelineItem[];
   readonly status: ProcessingStatus;
 }
@@ -43,12 +49,18 @@ interface MutableTurn {
   readonly user: UserTimelineItem;
   readonly activities: ProcessingActivity[];
   finalResponse?: FinalResponseTimelineItem;
+  turnUsage?: TurnUsageTimelineItem;
   readonly errors: ErrorTimelineItem[];
 }
 
 export interface ProcessingExpansionState {
   readonly expanded: boolean;
-  readonly userOverridden: boolean;
+  readonly preference: "automatic" | "user-expanded" | "user-collapsed";
+}
+
+export interface ProcessingActivityNode {
+  readonly item: ProcessingActivity;
+  readonly children: readonly ProcessingActivityNode[];
 }
 
 export type ActivityExpansionState = Readonly<Record<string, boolean>>;
@@ -79,10 +91,16 @@ export function buildConversationView(
     if (item.type === "assistant" && item.complete && item.text.length === 0) {
       continue;
     }
-    if (item.type === "assistant" || item.type === "tool") {
+    if (
+      item.type === "assistant" ||
+      item.type === "thinking" ||
+      item.type === "tool"
+    ) {
       currentTurn.activities.push(item);
     } else if (item.type === "finalResponse") {
       currentTurn.finalResponse = item;
+    } else if (item.type === "turnUsage") {
+      currentTurn.turnUsage = item;
     } else {
       currentTurn.errors.push(item);
     }
@@ -116,6 +134,9 @@ export function activitySummary(
   workspacePath: string | undefined,
 ): string | undefined {
   if (item.type === "assistant") {
+    return truncate(item.text.replace(/\s+/gu, " ").trim(), 90);
+  }
+  if (item.type === "thinking") {
     return truncate(item.text.replace(/\s+/gu, " ").trim(), 90);
   }
   if (item.detail === undefined) {
@@ -159,7 +180,7 @@ export function initialProcessingExpansion(
 ): ProcessingExpansionState {
   return {
     expanded: status !== "completed" && status !== "cancelled",
-    userOverridden: false,
+    preference: "automatic",
   };
 }
 
@@ -167,20 +188,26 @@ export function updateProcessingExpansion(
   state: ProcessingExpansionState,
   status: ProcessingStatus,
 ): ProcessingExpansionState {
+  if (state.preference !== "automatic") {
+    return state;
+  }
   if (status === "failed" || status === "waiting") {
     return state.expanded ? state : { ...state, expanded: true };
   }
-  if (status === "completed" && !state.userOverridden) {
+  if (status === "completed" || status === "cancelled") {
     return state.expanded ? { ...state, expanded: false } : state;
   }
   return state;
 }
 
 export function setProcessingExpanded(
-  state: ProcessingExpansionState,
+  _state: ProcessingExpansionState,
   expanded: boolean,
 ): ProcessingExpansionState {
-  return { ...state, expanded, userOverridden: true };
+  return {
+    expanded,
+    preference: expanded ? "user-expanded" : "user-collapsed",
+  };
 }
 
 export function isActivityExpanded(
@@ -191,6 +218,52 @@ export function isActivityExpanded(
     state[item.id] ??
     (item.type === "tool" ? item.state === "running" : !item.complete)
   );
+}
+
+export function buildActivityTree(
+  activities: readonly ProcessingActivity[],
+): readonly ProcessingActivityNode[] {
+  const nodes = new Map<
+    string,
+    { item: ProcessingActivity; children: ProcessingActivityNode[] }
+  >();
+  for (const item of activities) {
+    nodes.set(item.id, { item, children: [] });
+  }
+  const roots: ProcessingActivityNode[] = [];
+  for (const item of activities) {
+    const node = nodes.get(item.id);
+    if (node === undefined) {
+      continue;
+    }
+    const parentId = "parentId" in item ? item.parentId : undefined;
+    const parent = parentId === undefined ? undefined : nodes.get(parentId);
+    if (parent === undefined) {
+      roots.push(node);
+    } else {
+      parent.children.push(node);
+    }
+  }
+  return roots;
+}
+
+export function thoughtTitle(
+  item: ThinkingTimelineItem,
+  now = Date.now(),
+): string {
+  const durationMs = item.complete
+    ? (item.durationMs ?? 0)
+    : Math.max(0, now - item.startedAt);
+  if (!item.complete) {
+    return `∴ Thinking… ${formatDuration(durationMs)}`;
+  }
+  return durationMs < 1_000
+    ? "∴ Thought briefly"
+    : `∴ Thought for ${formatDuration(durationMs)}`;
+}
+
+function formatDuration(durationMs: number): string {
+  return `${String(Math.max(1, Math.round(durationMs / 1_000)))}s`;
 }
 
 export function toggleActivityExpansion(

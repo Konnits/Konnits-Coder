@@ -342,6 +342,9 @@ export class ChatController implements vscode.Disposable {
             id: event.messageId,
             text: "",
             complete: false,
+            ...(event.parentId === undefined
+              ? {}
+              : { parentId: event.parentId }),
           });
         }
         break;
@@ -355,6 +358,39 @@ export class ChatController implements vscode.Disposable {
       case "assistant.message.completed":
         this.updateAssistant(event.messageId, (text) => text, true);
         break;
+      case "thinking.started":
+        if (
+          !this.timeline.some(
+            (item) => item.type === "thinking" && item.id === event.thoughtId,
+          )
+        ) {
+          this.timeline.push({
+            type: "thinking",
+            id: event.thoughtId,
+            text: "",
+            complete: false,
+            startedAt: event.timestamp,
+            ...(event.parentId === undefined
+              ? {}
+              : { parentId: event.parentId }),
+          });
+        }
+        break;
+      case "thinking.chunk":
+        this.updateThinking(
+          event.thoughtId,
+          (text) => text + event.text,
+          false,
+        );
+        break;
+      case "thinking.completed":
+        this.updateThinking(
+          event.thoughtId,
+          (text) => text,
+          true,
+          event.durationMs,
+        );
+        break;
       case "tool.started":
         this.timeline.push({
           type: "tool",
@@ -362,8 +398,18 @@ export class ChatController implements vscode.Disposable {
           kind: event.kind,
           title: event.title,
           ...(event.detail === undefined ? {} : { detail: event.detail }),
+          ...(event.parentId === undefined ? {} : { parentId: event.parentId }),
+          ...(event.subagentName === undefined
+            ? {}
+            : { subagentName: event.subagentName }),
+          ...(event.background === undefined
+            ? {}
+            : { background: event.background }),
           state: "running",
         });
+        break;
+      case "turn.usage.updated":
+        this.updateTurnUsage(event.runId, event.usage);
         break;
       case "tool.completed":
         this.updateTool(event.callId, {
@@ -379,6 +425,9 @@ export class ChatController implements vscode.Disposable {
         }
         return;
       case "agent.completed":
+        if (event.turnUsage !== undefined) {
+          this.updateTurnUsage(event.runId, event.turnUsage);
+        }
         this.promoteFinalResponse(event.runId, event.result, event.turnUsage);
         this.setStatus("completed");
         return;
@@ -428,6 +477,48 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
+  private updateThinking(
+    id: string,
+    update: (text: string) => string,
+    complete: boolean,
+    durationMs?: number,
+  ): void {
+    const index = this.timeline.findIndex(
+      (item) => item.type === "thinking" && item.id === id,
+    );
+    const item = this.timeline[index];
+    if (item?.type === "thinking") {
+      this.timeline[index] = {
+        ...item,
+        text: update(item.text),
+        complete,
+        ...(durationMs === undefined ? {} : { durationMs }),
+      };
+      return;
+    }
+    this.timeline.push({
+      type: "thinking",
+      id,
+      text: update(""),
+      complete,
+      startedAt: Date.now(),
+      ...(durationMs === undefined ? {} : { durationMs }),
+    });
+  }
+
+  private updateTurnUsage(runId: string, usage: TurnTokenUsage): void {
+    const id = `turn-usage-${runId}`;
+    const index = this.timeline.findIndex(
+      (item) => item.type === "turnUsage" && item.id === id,
+    );
+    const item = { type: "turnUsage" as const, id, usage };
+    if (index === -1) {
+      this.timeline.push(item);
+    } else {
+      this.timeline[index] = item;
+    }
+  }
+
   private promoteFinalResponse(
     runId: string,
     result: string | undefined,
@@ -442,6 +533,7 @@ export class ChatController implements vscode.Disposable {
       (item, index) =>
         index > turnStart &&
         item.type === "assistant" &&
+        item.parentId === undefined &&
         (result === undefined || item.text === result),
     );
     const assistant = this.timeline[assistantIndex];

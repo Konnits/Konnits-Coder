@@ -123,6 +123,98 @@ describe("ChatController terminal states", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps streamed thinking separate from the final response", async () => {
+    const { controller, agent } = await createController();
+    agent.emit(startedEvent());
+    agent.emit({
+      type: "thinking.started",
+      thoughtId: "thought-1",
+      timestamp: 1_000,
+    });
+    agent.emit({
+      type: "thinking.chunk",
+      thoughtId: "thought-1",
+      text: "Private emitted reasoning",
+      timestamp: 1_500,
+    });
+    agent.emit({
+      type: "thinking.completed",
+      thoughtId: "thought-1",
+      durationMs: 2_000,
+      timestamp: 3_000,
+    });
+    agent.emit({
+      type: "agent.completed",
+      runId: "run-1",
+      result: "Visible result",
+      timestamp: 4_000,
+    });
+
+    expect(controller.getState().timeline).toContainEqual(
+      expect.objectContaining({
+        type: "thinking",
+        text: "Private emitted reasoning",
+        complete: true,
+        durationMs: 2_000,
+      }),
+    );
+    const final = controller
+      .getState()
+      .timeline.find((item) => item.type === "finalResponse");
+    expect(final).toMatchObject({ text: "Visible result" });
+    expect(final?.type === "finalResponse" && final.text).not.toContain(
+      "Private emitted reasoning",
+    );
+  });
+
+  it("updates one authoritative turn-usage item progressively", async () => {
+    const { controller, agent } = await createController();
+    agent.emit(startedEvent());
+    agent.emit(turnUsageEvent(10, 2));
+    agent.emit(turnUsageEvent(30, 5));
+
+    const items = controller
+      .getState()
+      .timeline.filter((item) => item.type === "turnUsage");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      usage: { inputTokens: 30, outputTokens: 5 },
+    });
+  });
+
+  it("preserves subagent parent relationships without inventing usage", async () => {
+    const { controller, agent } = await createController();
+    agent.emit(startedEvent());
+    agent.emit({
+      type: "tool.started",
+      callId: "agent-1",
+      toolName: "agent",
+      kind: "subagent",
+      title: "Agent",
+      detail: "Architecture analysis",
+      subagentName: "general-purpose",
+      timestamp: Date.now(),
+    });
+    agent.emit({
+      type: "tool.started",
+      callId: "child-read",
+      toolName: "read_file",
+      kind: "read",
+      title: "Read",
+      detail: "package.json",
+      parentId: "agent-1",
+      timestamp: Date.now(),
+    });
+
+    const child = controller
+      .getState()
+      .timeline.find(
+        (item) => item.type === "tool" && item.id === "child-read",
+      );
+    expect(child).toMatchObject({ parentId: "agent-1" });
+    expect(child).not.toHaveProperty("turnUsage");
+  });
+
   it("leaves running and reaches failed with a visible error", async () => {
     const { controller, agent } = await createController();
 
@@ -378,6 +470,22 @@ function messageCompleted(messageId: string): AgentEvent {
   return {
     type: "assistant.message.completed",
     messageId,
+    timestamp: Date.now(),
+  };
+}
+
+function turnUsageEvent(inputTokens: number, outputTokens: number): AgentEvent {
+  return {
+    type: "turn.usage.updated",
+    runId: "run-1",
+    usage: {
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalTokens: inputTokens + outputTokens,
+      accuracy: "exact",
+    },
     timestamp: Date.now(),
   };
 }
