@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AppState,
   ChangeViewModel,
   ExtensionToWebviewMessage,
+  ChatReference,
+  SlashCommandSuggestion,
+  WorkspaceReferenceSuggestion,
 } from "../../src/webview/messages.js";
+import {
+  parseComposerSuggestionMode,
+  replaceComposerSuggestion,
+} from "../../src/chat/ComposerInputParser.js";
 import { AgentTurn } from "./AgentTurn.js";
 import { ContextUsageMeter } from "./ContextUsageMeter.js";
 import { MarkdownMessage } from "./MarkdownMessage.js";
@@ -15,6 +22,7 @@ import {
 import { vscode } from "./vscode.js";
 import { useStickyBottom } from "./stickyBottom.js";
 import { PermissionCard } from "./PermissionCard.js";
+import { SuggestionPopup } from "./SuggestionPopup.js";
 
 const initialState: AppState = {
   status: "idle",
@@ -28,6 +36,23 @@ const initialState: AppState = {
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState>(initialState);
   const [prompt, setPrompt] = useState("");
+  const [cursor, setCursor] = useState(0);
+  const [commands, setCommands] = useState<readonly SlashCommandSuggestion[]>(
+    [],
+  );
+  const [commandsLoaded, setCommandsLoaded] = useState(false);
+  const [referenceResults, setReferenceResults] = useState<
+    readonly WorkspaceReferenceSuggestion[]
+  >([]);
+  const [selectedReferences, setSelectedReferences] = useState<
+    readonly ChatReference[]
+  >([]);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<
+    string | undefined
+  >();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const requestId = useRef(0);
   const busy = useMemo(
     () =>
       state.status === "connecting" ||
@@ -72,12 +97,73 @@ export function App(): React.JSX.Element {
     const listener = (event: MessageEvent<unknown>): void => {
       if (isStateMessage(event.data)) {
         setState(event.data.state);
+      } else if (isSlashCommandsMessage(event.data)) {
+        setCommands(event.data.commands);
+        setCommandsLoaded(true);
+      } else if (isWorkspaceReferencesMessage(event.data)) {
+        if (event.data.requestId === String(requestId.current)) {
+          setReferenceResults(event.data.references);
+        }
       }
     };
     window.addEventListener("message", listener);
     vscode.postMessage({ type: "ready" });
     return () => window.removeEventListener("message", listener);
   }, []);
+
+  const suggestionMode = useMemo(
+    () => parseComposerSuggestionMode(prompt, cursor),
+    [cursor, prompt],
+  );
+  const suggestionKey = useMemo(
+    () =>
+      suggestionMode.kind === "none"
+        ? "none"
+        : `${suggestionMode.kind}:${String(suggestionMode.start)}:${String(suggestionMode.end)}:${suggestionMode.query}`,
+    [suggestionMode],
+  );
+  const visibleCommands = useMemo(() => {
+    if (suggestionMode.kind !== "command") {
+      return [];
+    }
+    const query = suggestionMode.query.toLowerCase();
+    return commands.filter((command) =>
+      [command.name, ...(command.aliases ?? [])].some(
+        (name) =>
+          name.toLowerCase().includes(query) ||
+          name.toLowerCase().includes(`/${query}`),
+      ),
+    );
+  }, [commands, suggestionMode]);
+  const visibleSuggestions =
+    suggestionMode.kind === "command" ? visibleCommands : referenceResults;
+  const suggestionsOpen =
+    suggestionMode.kind !== "none" &&
+    suggestionKey !== dismissedSuggestionKey &&
+    visibleSuggestions.length > 0;
+
+  useEffect(() => {
+    setHighlightedIndex(0);
+    if (suggestionMode.kind === "command" && !commandsLoaded) {
+      vscode.postMessage({ type: "requestSlashCommands" });
+    }
+  }, [commandsLoaded, suggestionMode.kind]);
+
+  useEffect(() => {
+    if (suggestionMode.kind !== "reference") {
+      return;
+    }
+    const currentRequestId = String(requestId.current + 1);
+    requestId.current += 1;
+    const timer = window.setTimeout(() => {
+      vscode.postMessage({
+        type: "searchWorkspaceReferences",
+        requestId: currentRequestId,
+        query: suggestionMode.query,
+      });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [suggestionMode]);
 
   const conversation = useMemo(
     () => buildConversationView(state.timeline, state.status),
@@ -88,11 +174,98 @@ export function App(): React.JSX.Element {
 
   const send = (): void => {
     const value = prompt.trim();
-    if (value.length === 0 || busy || !state.trusted) {
+    if (
+      (value.length === 0 && selectedReferences.length === 0) ||
+      busy ||
+      !state.trusted
+    ) {
       return;
     }
-    vscode.postMessage({ type: "sendPrompt", prompt: value });
+    vscode.postMessage({
+      type: "sendPrompt",
+      prompt: value,
+      ...(selectedReferences.length === 0
+        ? {}
+        : { references: selectedReferences }),
+    });
     setPrompt("");
+    setCursor(0);
+    setSelectedReferences([]);
+  };
+
+  const updatePrompt = (value: string, nextCursor: number): void => {
+    setPrompt(value);
+    setCursor(nextCursor);
+    setDismissedSuggestionKey(undefined);
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      textarea?.focus();
+      textarea?.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
+
+  const selectCommand = (command: SlashCommandSuggestion): void => {
+    if (suggestionMode.kind !== "command") {
+      return;
+    }
+    const replacement = command.name;
+    updatePrompt(
+      replaceComposerSuggestion(prompt, suggestionMode, replacement),
+      suggestionMode.start + replacement.length,
+    );
+  };
+
+  const selectReference = (reference: WorkspaceReferenceSuggestion): void => {
+    if (suggestionMode.kind !== "reference") {
+      return;
+    }
+    if (!selectedReferences.some((selected) => selected.id === reference.id)) {
+      setSelectedReferences((current) => [...current, reference]);
+    }
+    updatePrompt(
+      replaceComposerSuggestion(prompt, suggestionMode, ""),
+      suggestionMode.start,
+    );
+  };
+
+  const onComposerKeyDown = (
+    event: React.KeyboardEvent<HTMLTextAreaElement>,
+  ): void => {
+    if (suggestionsOpen) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setHighlightedIndex((index) =>
+          Math.min(index + 1, visibleSuggestions.length - 1),
+        );
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setHighlightedIndex((index) => Math.max(index - 1, 0));
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDismissedSuggestionKey(suggestionKey);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        const selected = visibleSuggestions[highlightedIndex];
+        if (selected !== undefined) {
+          if (suggestionMode.kind === "command") {
+            selectCommand(selected as SlashCommandSuggestion);
+          } else {
+            selectReference(selected as WorkspaceReferenceSuggestion);
+          }
+        }
+        return;
+      }
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      send();
+    }
   };
 
   return (
@@ -207,24 +380,63 @@ export function App(): React.JSX.Element {
       </div>
 
       <footer className="composer">
-        <textarea
-          value={prompt}
-          disabled={busy || !state.trusted}
-          rows={3}
-          aria-label="Message Qwen"
-          placeholder={
-            state.trusted
-              ? "Ask Qwen to work on this workspace…"
-              : "Trust workspace to chat"
-          }
-          onChange={(event) => setPrompt(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              send();
+        {selectedReferences.length > 0 && (
+          <div className="reference-chips" aria-label="Selected references">
+            {selectedReferences.map((reference) => (
+              <span className="reference-chip" key={reference.id}>
+                <span aria-hidden="true">@</span>
+                <span>{reference.displayName}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${reference.displayName}`}
+                  onClick={() =>
+                    setSelectedReferences((current) =>
+                      current.filter((item) => item.id !== reference.id),
+                    )
+                  }
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="composer-input">
+          {suggestionsOpen && (
+            <SuggestionPopup
+              kind={
+                suggestionMode.kind === "reference" ? "reference" : "command"
+              }
+              commands={visibleCommands}
+              references={referenceResults}
+              highlightedIndex={highlightedIndex}
+              onHighlight={setHighlightedIndex}
+              onSelectCommand={selectCommand}
+              onSelectReference={selectReference}
+            />
+          )}
+          <textarea
+            ref={textareaRef}
+            value={prompt}
+            disabled={busy || !state.trusted}
+            rows={3}
+            aria-label="Message Qwen"
+            placeholder={
+              state.trusted
+                ? "Ask Qwen to work on this workspace…"
+                : "Trust workspace to chat"
             }
-          }}
-        />
+            onChange={(event) => {
+              setPrompt(event.target.value);
+              setCursor(event.target.selectionStart);
+              setDismissedSuggestionKey(undefined);
+            }}
+            onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
+            onClick={(event) => setCursor(event.currentTarget.selectionStart)}
+            onKeyUp={(event) => setCursor(event.currentTarget.selectionStart)}
+            onKeyDown={onComposerKeyDown}
+          />
+        </div>
         <div className="composer-actions">
           {busy ? (
             <button
@@ -237,7 +449,11 @@ export function App(): React.JSX.Element {
           ) : (
             <button
               className="primary"
-              disabled={prompt.trim().length === 0 || !state.trusted}
+              disabled={
+                (prompt.trim().length === 0 &&
+                  selectedReferences.length === 0) ||
+                !state.trusted
+              }
               onClick={send}
             >
               Send
@@ -249,7 +465,9 @@ export function App(): React.JSX.Element {
   );
 }
 
-function isStateMessage(value: unknown): value is ExtensionToWebviewMessage {
+function isStateMessage(
+  value: unknown,
+): value is Extract<ExtensionToWebviewMessage, { readonly type: "state" }> {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -276,6 +494,40 @@ function isStateMessage(value: unknown): value is ExtensionToWebviewMessage {
     Array.isArray(state.changes) &&
     "permissions" in state &&
     Array.isArray(state.permissions)
+  );
+}
+
+function isSlashCommandsMessage(
+  value: unknown,
+): value is Extract<
+  ExtensionToWebviewMessage,
+  { readonly type: "slashCommands" }
+> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "slashCommands" &&
+    "commands" in value &&
+    Array.isArray(value.commands)
+  );
+}
+
+function isWorkspaceReferencesMessage(
+  value: unknown,
+): value is Extract<
+  ExtensionToWebviewMessage,
+  { readonly type: "workspaceReferences" }
+> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "workspaceReferences" &&
+    "requestId" in value &&
+    typeof value.requestId === "string" &&
+    "references" in value &&
+    Array.isArray(value.references)
   );
 }
 

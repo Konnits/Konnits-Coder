@@ -323,6 +323,10 @@ export class QwenCodeAgentClient implements AgentClient {
       ...(subagents?.agents === undefined
         ? {}
         : { agents: [...subagents.agents] }),
+      ...(request.workspacePaths === undefined ||
+      request.workspacePaths.length <= 1
+        ? {}
+        : { includeDirectories: [...request.workspacePaths.slice(1)] }),
       ...(resume
         ? { resume: request.sessionId }
         : { sessionId: request.sessionId }),

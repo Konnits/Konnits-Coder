@@ -12,6 +12,7 @@ import type { Logger } from "../../src/logging/Logger.js";
 import type { ModelManagement } from "../../src/models/ModelTypes.js";
 import type { PermissionManager } from "../../src/permissions/PermissionManager.js";
 import type { QwenSessionManager } from "../../src/qwen/QwenSessionManager.js";
+import type { ChatReference } from "../../src/webview/messages.js";
 
 vi.mock("vscode", () => ({
   workspace: {
@@ -371,6 +372,34 @@ describe("ChatController terminal states", () => {
     expect(failing.controller.getState().status).not.toBe("failed");
   });
 
+  it("serializes selected references for Qwen while keeping visible text and metadata separate", async () => {
+    const { controller, agent } = await createController();
+    const reference: ChatReference = {
+      id: "file:///C:/workspace/README.md",
+      kind: "file",
+      workspaceFolderUri: "[object Object]",
+      uri: "file:///C:/workspace/README.md",
+      relativePath: "README.md",
+      displayName: "README.md",
+    };
+
+    controller.handleMessage({
+      type: "sendPrompt",
+      prompt: "explica la instalación",
+      references: [reference],
+    });
+
+    await vi.waitFor(() => expect(agent.lastRequest).toBeDefined());
+    expect(agent.lastRequest?.prompt).toBe("@README.md explica la instalación");
+    expect(controller.getState().timeline).toContainEqual(
+      expect.objectContaining({
+        type: "user",
+        text: "explica la instalación",
+        references: [reference],
+      }),
+    );
+  });
+
   it("refreshes the secret-free model summary when the webview becomes ready", async () => {
     const models = fakeModelManagement({ modelChanged: false });
     const { controller } = await createController(undefined, models);
@@ -545,13 +574,14 @@ function turnUsageEvent(inputTokens: number, outputTokens: number): AgentEvent {
 
 class FakeAgentClient implements AgentClient {
   private listener: ((event: AgentEvent) => void) | undefined;
+  lastRequest: AgentRunRequest | undefined;
 
   connect(): Promise<void> {
     return Promise.resolve();
   }
 
   run(request: AgentRunRequest): Promise<void> {
-    void request;
+    this.lastRequest = request;
     return Promise.resolve();
   }
 

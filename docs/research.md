@@ -1,6 +1,6 @@
 # API research
 
-Research date: 2026-08-14. Only stable public VS Code APIs and official Qwen Code documentation/source were used.
+Research date: 2026-08-15. Only stable public VS Code APIs, the installed SDK declarations/bundle, and official Qwen Code documentation were used.
 
 ## Qwen Code
 
@@ -16,6 +16,77 @@ Confirmed SDK behavior:
 - `permissionMode: "default"` permits read-only tools and calls `canUseTool` for writes/commands; absent approval is fail-closed.
 - `pathToQwenExecutable` is optional in the 0.1.8 declarations because the package includes a bundled CLI. It can still target an explicit installed Qwen executable.
 - The SDK and current Qwen Code require Node.js 22 or newer.
+- `Query.supportedCommands()` is a public control API. With the installed
+  bundle it returned `{ subtype: "supported_commands", commands: [...] }` and
+  did not invoke the model when called on an SDK query with an idle input
+  stream.
+- The installed SDK's command response contains names only for this runtime;
+  descriptions and source labels are not consistently exposed. Konnits keeps
+  those fields optional and uses a small presentation-only description map for
+  familiar built-ins. Runtime names remain authoritative.
+- The installed SDK does not export a public command-registry enumeration
+  beyond `supportedCommands()`. Project and user Markdown/TOML command files
+  under `.qwen/commands/` and `~/.qwen/commands/` are inspected only to attach
+  descriptions/source labels to names already reported by Qwen. Project
+  metadata wins over user metadata, matching Qwen's documented precedence.
+
+The installed versions were checked directly:
+
+- `@qwen-code/sdk`: 0.1.8
+- SDK-bundled CLI: 0.19.10
+- global `qwen`: 0.21.12; it is not used unless the executable override is configured
+
+The current official [Qwen commands documentation](https://qwenlm.github.io/qwen-code-docs/en/users/features/commands/)
+documents `/` slash commands, `@` file/directory injection, escaped spaces,
+and project-over-user custom-command precedence. The official documentation
+also describes headless `/diff` as plain text rather than an interactive picker.
+
+### Slash command runtime validation
+
+The installed bundled CLI returned these supported command names through the
+public SDK control request during validation: `auth`, `bug`, `clear`,
+`compress`, `compress-fast`, `config`, `context`, `diff`, `docs`, `doctor`,
+`effort`, `export`, `extensions`, `goal`, `hooks`, `import-config`, `init`,
+`insight`, `language`, `model`, `stats`, `status`, `summary`, `tasks`, and
+`update`. This list is recorded as research evidence only; it is not copied
+into application code.
+
+Direct SDK/headless command checks using the same bundled CLI produced:
+
+- `/context`: success with context usage text.
+- `/model`: success with current-model text and argument help.
+- `/agents`: `error_during_execution`, unsupported in this mode; it is not
+  advertised because the active runtime did not report it.
+
+Konnits sends selected slash commands unchanged through `QwenCodeAgentClient`.
+There are currently no speculative Konnits-native command adapters.
+
+### Native `@` validation
+
+The installed CLI source contains the `@` preprocessor in its SDK input path:
+it parses escaped path tokens, checks workspace boundaries and ignore rules,
+resolves files/directories, invokes Qwen's multi-file reader, and appends the
+resulting content parts before model generation. Konnits therefore does not
+read or inject file contents itself.
+
+Live SDK checks through the bundled 0.19.10 CLI succeeded:
+
+- `@package.json dime cuál es el nombre del proyecto y menciona dos dependencias.`
+  returned the project name `konnits-coder` and dependencies based on the file.
+- `@src/ resume la estructura de este directorio en tres puntos.` returned a
+  directory summary based on `src/`.
+
+The serializer normalizes Windows separators to `/` and escapes Qwen's shell
+special path characters, including spaces (`@My\\ Documents/file.txt`).
+Non-primary multi-root references use an absolute file URI path because the
+current Konnits query uses the first workspace as `cwd`; all additional roots
+are passed through SDK `includeDirectories`. This keeps display paths relative
+while giving Qwen an unambiguous path for separate roots.
+
+Autocomplete uses metadata only. It is bounded to 40 visible workspace
+candidates, excludes common generated/binary locations, and does not transmit
+file contents. The current implementation refreshes command discovery on the
+first `/` menu request; it does not watch global custom-command directories.
 
 ### Thinking and partial-message correlation
 

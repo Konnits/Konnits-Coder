@@ -1,7 +1,14 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import type { ChatController } from "./ChatController.js";
-import type { ExtensionToWebviewMessage } from "../webview/messages.js";
+import type { QwenCommandProvider } from "../qwen/QwenCommandProvider.js";
+import type {
+  ExtensionToWebviewMessage,
+  SlashCommandsMessage,
+  WorkspaceReferencesMessage,
+} from "../webview/messages.js";
+import { parseWebviewMessage } from "../webview/messages.js";
+import type { WorkspaceReferenceService } from "./WorkspaceReferenceService.js";
 
 export class ChatViewProvider
   implements vscode.WebviewViewProvider, vscode.Disposable
@@ -13,6 +20,8 @@ export class ChatViewProvider
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly controller: ChatController,
+    private readonly commands: QwenCommandProvider,
+    private readonly references: WorkspaceReferenceService,
   ) {
     this.stateSubscription = controller.onDidChange(() => {
       void this.postState();
@@ -28,9 +37,20 @@ export class ChatViewProvider
       localResourceRoots: [distUri],
     };
     webview.html = this.getHtml(webview);
-    webview.onDidReceiveMessage((message: unknown) =>
-      this.controller.handleMessage(message),
-    );
+    webview.onDidReceiveMessage((message: unknown) => {
+      const parsed = parseWebviewMessage(message);
+      if (parsed === undefined) {
+        this.controller.handleMessage(message);
+        return;
+      }
+      if (parsed.type === "requestSlashCommands") {
+        void this.postSlashCommands();
+      } else if (parsed.type === "searchWorkspaceReferences") {
+        void this.postWorkspaceReferences(parsed.requestId, parsed.query);
+      } else {
+        this.controller.handleMessage(parsed);
+      }
+    });
     webviewView.onDidDispose(() => {
       this.view = undefined;
     });
@@ -51,6 +71,46 @@ export class ChatViewProvider
       state: this.controller.getState(),
     };
     await this.view.webview.postMessage(message);
+  }
+
+  private async postSlashCommands(): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders;
+    const message: SlashCommandsMessage =
+      folders === undefined || folders.length === 0
+        ? { type: "slashCommands", commands: [] }
+        : {
+            type: "slashCommands",
+            commands: await discoverCommands(this.commands, folders),
+          };
+    await this.postMessage(message);
+  }
+
+  private async postWorkspaceReferences(
+    requestId: string,
+    query: string,
+  ): Promise<void> {
+    let message: WorkspaceReferencesMessage;
+    try {
+      message = {
+        type: "workspaceReferences",
+        requestId,
+        references: await this.references.search(query),
+      };
+    } catch (error) {
+      message = {
+        type: "workspaceReferences",
+        requestId,
+        references: [],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    await this.postMessage(message);
+  }
+
+  private async postMessage(message: ExtensionToWebviewMessage): Promise<void> {
+    if (this.view !== undefined) {
+      await this.view.webview.postMessage(message);
+    }
   }
 
   private getHtml(webview: vscode.Webview): string {
@@ -76,4 +136,18 @@ export class ChatViewProvider
 </body>
 </html>`;
   }
+}
+
+async function discoverCommands(
+  provider: QwenCommandProvider,
+  folders: readonly vscode.WorkspaceFolder[],
+): Promise<Awaited<ReturnType<QwenCommandProvider["discover"]>>> {
+  const firstFolder = folders[0];
+  if (firstFolder === undefined) {
+    return [];
+  }
+  return provider.discover(
+    firstFolder.uri.fsPath,
+    folders.map((folder) => folder.uri.fsPath),
+  );
 }

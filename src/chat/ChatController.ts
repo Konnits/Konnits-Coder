@@ -19,9 +19,11 @@ import type {
 } from "../models/ModelTypes.js";
 import type { PermissionManager } from "../permissions/PermissionManager.js";
 import type { QwenSessionManager } from "../qwen/QwenSessionManager.js";
+import { serializeQwenPrompt } from "../qwen/QwenReferenceSerializer.js";
 import {
   parseWebviewMessage,
   type AppState,
+  type ChatReference,
   type ExecutionStatus,
   type TimelineItem,
   type ToolTimelineItem,
@@ -207,7 +209,7 @@ export class ChatController implements vscode.Disposable {
           await this.connect();
           break;
         case "sendPrompt":
-          await this.sendPrompt(message.prompt);
+          await this.sendPrompt(message.prompt, message.references ?? []);
           break;
         case "cancel":
           await this.cancel();
@@ -254,14 +256,21 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  private async sendPrompt(rawPrompt: string): Promise<void> {
+  private async sendPrompt(
+    rawPrompt: string,
+    references: readonly ChatReference[],
+  ): Promise<void> {
     const prompt = rawPrompt.trim();
-    if (prompt.length === 0 || isBusy(this.status)) {
+    if (
+      (prompt.length === 0 && references.length === 0) ||
+      isBusy(this.status)
+    ) {
       return;
     }
     this.requireTrustedWorkspace();
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (folder === undefined) {
+    const folders = vscode.workspace.workspaceFolders;
+    const folder = folders?.[0];
+    if (folders === undefined || folder === undefined) {
       throw new Error(
         "Open a workspace folder before sending a coding request.",
       );
@@ -277,16 +286,23 @@ export class ChatController implements vscode.Disposable {
     }
     this.sessionId = selection.session.id;
     const tokenCount = this.safeCountTokens(prompt);
+    const serializedPrompt = serializeQwenPrompt(prompt, references, {
+      primaryWorkspaceFolderUri: folder.uri.toString(),
+    });
     this.timeline.push({
       type: "user",
       id: randomUUID(),
       text: prompt,
       ...(tokenCount === undefined ? {} : { tokenCount }),
+      ...(references.length === 0 ? {} : { references: [...references] }),
     });
     this.emitChange();
     await this.agent.run({
-      prompt,
+      prompt: serializedPrompt,
       workspacePath: folder.uri.fsPath,
+      ...(folders.length <= 1
+        ? {}
+        : { workspacePaths: folders.map((workspace) => workspace.uri.fsPath) }),
       sessionId: selection.session.id,
       resume: selection.resume,
     });

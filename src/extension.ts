@@ -5,6 +5,7 @@ import { DiffContentProvider } from "./changes/DiffContentProvider.js";
 import { VsCodeFileSystem } from "./changes/VsCodeFileSystem.js";
 import { ChatController } from "./chat/ChatController.js";
 import { ChatViewProvider } from "./chat/ChatViewProvider.js";
+import { WorkspaceReferenceService } from "./chat/WorkspaceReferenceService.js";
 import { Configuration } from "./configuration/Configuration.js";
 import { Logger } from "./logging/Logger.js";
 import { ModelManagementController } from "./models/ModelManagementController.js";
@@ -12,6 +13,7 @@ import { OpenAICompatibleEndpointProbe } from "./models/OpenAICompatibleEndpoint
 import { QwenSettingsService } from "./models/QwenSettingsService.js";
 import { PermissionManager } from "./permissions/PermissionManager.js";
 import { QwenCodeAgentClient } from "./qwen/QwenCodeAgentClient.js";
+import { QwenCommandProvider } from "./qwen/QwenCommandProvider.js";
 import { QwenSessionManager } from "./qwen/QwenSessionManager.js";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -34,6 +36,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.workspaceFolders?.[0]?.uri.toString() ?? "no-workspace";
   const sessions = new QwenSessionManager(context.workspaceState, workspaceKey);
   const diff = new DiffContentProvider(changes);
+  const commandProvider = new QwenCommandProvider(
+    () => configuration.getQwenClientConfiguration(),
+    logger,
+  );
+  const referenceService = new WorkspaceReferenceService();
   const modelManagement = new ModelManagementController(
     new QwenSettingsService(),
     new OpenAICompatibleEndpointProbe(),
@@ -50,7 +57,12 @@ export function activate(context: vscode.ExtensionContext): void {
     undefined,
     modelManagement,
   );
-  const view = new ChatViewProvider(context.extensionUri, controller);
+  const view = new ChatViewProvider(
+    context.extensionUri,
+    controller,
+    commandProvider,
+    referenceService,
+  );
 
   context.subscriptions.push(
     logger,

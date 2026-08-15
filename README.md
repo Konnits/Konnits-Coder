@@ -80,6 +80,25 @@ Konnits-Coder currently provides:
 - Diagnostics through the `Qwen Frontend` Output channel.
 - Support for local and remote OpenAI-compatible model endpoints.
 
+## Prompt composer
+
+Type `/` at a command position to browse commands reported by the active Qwen
+runtime. Select a command with the mouse, Arrow keys, Enter, or Tab; the
+selected command is sent through Qwen's normal slash-command path.
+
+Type `@` to search workspace files and directories. Selected references appear
+as removable chips and are serialized with Qwen's native `@` syntax only when
+the request is sent.
+
+Examples:
+
+```text
+@src/extension.ts explain how extension activation works.
+@package.json @src/extension.ts compare the project setup and startup flow.
+```
+
+Autocomplete searches do not call the model or transmit file contents.
+
 ---
 
 # Requirements

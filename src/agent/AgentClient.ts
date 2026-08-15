@@ -7,6 +7,7 @@ export interface Disposable {
 export interface AgentRunRequest {
   readonly prompt: string;
   readonly workspacePath: string;
+  readonly workspacePaths?: readonly string[];
   readonly sessionId: string;
   readonly resume: boolean;
 }

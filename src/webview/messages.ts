@@ -18,11 +18,36 @@ export type ExecutionStatus =
   | "failed"
   | "completed";
 
+export type ChatReferenceKind = "file" | "directory";
+
+export interface ChatReference {
+  readonly id: string;
+  readonly kind: ChatReferenceKind;
+  readonly workspaceFolderUri: string;
+  readonly uri: string;
+  readonly relativePath: string;
+  readonly displayName: string;
+  readonly workspaceName?: string;
+}
+
+export interface SlashCommandSuggestion {
+  readonly name: string;
+  readonly description?: string;
+  readonly source?: string;
+  readonly aliases?: readonly string[];
+  readonly argumentHint?: string;
+}
+
+export interface WorkspaceReferenceSuggestion extends ChatReference {
+  readonly score: number;
+}
+
 export interface UserTimelineItem {
   readonly type: "user";
   readonly id: string;
   readonly text: string;
   readonly tokenCount?: MessageTokenCount;
+  readonly references?: readonly ChatReference[];
 }
 
 export interface AssistantTimelineItem {
@@ -116,15 +141,41 @@ export interface AppState {
   readonly permissions: readonly PermissionViewModel[];
 }
 
-export interface ExtensionToWebviewMessage {
-  readonly type: "state";
-  readonly state: AppState;
+export type ExtensionToWebviewMessage =
+  | {
+      readonly type: "state";
+      readonly state: AppState;
+    }
+  | SlashCommandsMessage
+  | WorkspaceReferencesMessage;
+
+export interface SlashCommandsMessage {
+  readonly type: "slashCommands";
+  readonly commands: readonly SlashCommandSuggestion[];
+  readonly error?: string;
+}
+
+export interface WorkspaceReferencesMessage {
+  readonly type: "workspaceReferences";
+  readonly requestId: string;
+  readonly references: readonly WorkspaceReferenceSuggestion[];
+  readonly error?: string;
 }
 
 export type WebviewToExtensionMessage =
   | { readonly type: "ready" }
   | { readonly type: "connect" }
-  | { readonly type: "sendPrompt"; readonly prompt: string }
+  | {
+      readonly type: "sendPrompt";
+      readonly prompt: string;
+      readonly references?: readonly ChatReference[];
+    }
+  | { readonly type: "requestSlashCommands" }
+  | {
+      readonly type: "searchWorkspaceReferences";
+      readonly requestId: string;
+      readonly query: string;
+    }
   | { readonly type: "cancel" }
   | { readonly type: "newSession" }
   | { readonly type: "manageModels" }
@@ -158,10 +209,31 @@ export function parseWebviewMessage(
     case "openModelSettings":
     case "acceptAll":
     case "rejectAll":
+    case "requestSlashCommands":
       return { type: value.type };
     case "sendPrompt":
-      return typeof value.prompt === "string"
-        ? { type: "sendPrompt", prompt: value.prompt }
+      if (typeof value.prompt !== "string") {
+        return undefined;
+      }
+      if (value.references === undefined) {
+        return { type: "sendPrompt", prompt: value.prompt };
+      }
+      return Array.isArray(value.references) &&
+        value.references.every(isChatReference)
+        ? {
+            type: "sendPrompt",
+            prompt: value.prompt,
+            references: value.references,
+          }
+        : undefined;
+    case "searchWorkspaceReferences":
+      return typeof value.requestId === "string" &&
+        typeof value.query === "string"
+        ? {
+            type: "searchWorkspaceReferences",
+            requestId: value.requestId,
+            query: value.query,
+          }
         : undefined;
     case "reviewFile":
     case "acceptFile":
@@ -185,4 +257,20 @@ export function parseWebviewMessage(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isChatReference(value: unknown): value is ChatReference {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    (value.kind === "file" || value.kind === "directory") &&
+    typeof value.workspaceFolderUri === "string" &&
+    typeof value.uri === "string" &&
+    typeof value.relativePath === "string" &&
+    typeof value.displayName === "string" &&
+    (value.workspaceName === undefined ||
+      typeof value.workspaceName === "string")
+  );
 }

@@ -19,6 +19,46 @@ Qwen Code → configured provider
 
 The domain and application layers never expose Qwen SDK messages to the webview. `QwenEventAdapter` validates and translates SDK messages into discriminated internal `AgentEvent` values.
 
+## Composer input flow
+
+The composer keeps a standard textarea. `ComposerInputParser` examines the
+current caret token and recognizes only valid whitespace-delimited `/` and `@`
+positions, so URLs and ordinary paths do not open a menu.
+
+```text
+textarea
+  ├─ requestSlashCommands → ChatViewProvider → QwenCommandProvider
+  │                                      └→ Query.supportedCommands()
+  └─ searchWorkspaceReferences → ChatViewProvider → WorkspaceReferenceService
+                                             └→ vscode.workspace.findFiles()
+```
+
+`QwenCommandProvider` treats `Query.supportedCommands()` as the authoritative
+command-name source. Optional descriptions, aliases, argument hints, and
+source labels are normalized from the runtime response; known descriptions are
+presentation-only metadata and never control execution. Project and user
+custom command files are inspected only for names and frontmatter descriptions
+after the runtime reports the command as available. Konnits does not parse or
+execute custom command bodies.
+
+References remain identity/display metadata in the webview. The extension
+serializes selected references with `QwenReferenceSerializer` immediately
+before `AgentClient.run()`:
+
+```text
+VS Code URI + relative path
+  → ChatReference chip
+  → QwenReferenceSerializer
+  → @path prompt prefix
+  → QwenCodeAgentClient
+  → Qwen Code native @ preprocessing
+```
+
+Qwen therefore reads the referenced file or directory itself. File contents are
+not sent during search and are not stored in webview state. The visible user
+timeline text and its token estimate exclude injected reference contents; the
+timeline separately retains the selected reference metadata.
+
 ## Components
 
 - `AgentClient`: connection, one active run, cancellation, and event subscription boundary.
@@ -35,6 +75,10 @@ The domain and application layers never expose Qwen SDK messages to the webview.
 - `VsCodeFileSystem`: implements file reads, writes, deletes, dirty-document checks, and workspace-boundary validation.
 - `DiffContentProvider`: exposes immutable `qwen-review:` original and proposed documents to the native diff editor.
 - `ChatViewProvider`: CSP-protected host for the React UI and typed message bridge.
+- `ComposerInputParser`: caret-aware slash/reference intent detection and replacement ranges.
+- `QwenCommandProvider`: cached runtime command discovery through the SDK control API, with custom-command presentation metadata.
+- `WorkspaceReferenceService`: bounded, fuzzy, workspace-relative file/directory discovery using stable VS Code APIs.
+- `QwenReferenceSerializer`: Qwen-compatible path escaping and multi-root serialization.
 - `Configuration` and `Logger`: centralized settings and secret-conscious diagnostics.
 
 ## Event and state flow
