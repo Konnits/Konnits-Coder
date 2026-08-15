@@ -151,9 +151,19 @@ describe("QwenCodeAgentClient live integration", () => {
       const permissions = new PermissionManager();
       permissions.onDidChange(() => {
         for (const request of permissions.list()) {
+          const toolName = request.toolName.toLowerCase();
           permissions.resolve(
             request.id,
-            request.toolName.toLowerCase() === "agent" ? "allow" : "deny",
+            toolName === "agent" ||
+              [
+                "read_file",
+                "read_many_files",
+                "list_directory",
+                "glob",
+                "grep_search",
+              ].includes(toolName)
+              ? "allow"
+              : "deny",
           );
         }
       });
@@ -191,7 +201,7 @@ describe("QwenCodeAgentClient live integration", () => {
 
       await client.run({
         prompt:
-          "Usa explícitamente un subagente general-purpose para realizar un análisis profundo de este repositorio. El agente principal no debe hacer el análisis por sí mismo. El subagente debe usar sus herramientas para leer package.json y src/extension.ts como evidencia. Espera el resultado del subagente y luego resúmelo. No modifiques archivos.",
+          "Usa explícitamente un subagente general-purpose para realizar un análisis profundo de este repositorio. El agente principal no debe hacer el análisis por sí mismo. Ejecuta el subagente en primer plano (run_in_background=false). El subagente debe usar sus herramientas para leer package.json y src/extension.ts y buscar referencias a Qwen como evidencia. Espera el resultado del subagente y luego resúmelo. No modifiques archivos.",
         workspacePath: process.cwd(),
         sessionId: randomUUID(),
         resume: false,
@@ -218,8 +228,169 @@ describe("QwenCodeAgentClient live integration", () => {
           event.parentId === undefined,
       );
       expect(agentCompletionIndex).toBeGreaterThanOrEqual(0);
+      const childToolStarts = subagentTurn.filter(
+        (event) =>
+          event.type === "tool.started" &&
+          event.parentId === agentStart.callId &&
+          event.kind !== "subagent",
+      );
+      expect(
+        childToolStarts.map((event) =>
+          event.type === "tool.started" ? event.toolName : "",
+        ),
+      ).toEqual(expect.arrayContaining(["read_file"]));
+      expect(
+        childToolStarts.some(
+          (event) =>
+            event.type === "tool.started" &&
+            ["grep_search", "glob", "list_directory"].includes(event.toolName),
+        ),
+      ).toBe(true);
       expect(parentContinuationIndex).toBeGreaterThan(agentCompletionIndex);
       expect(subagentTurn.at(-1)?.type).toBe("agent.completed");
+      if (process.env.QWEN_LIVE_REPORT === "1") {
+        console.info(
+          JSON.stringify({
+            subagentTrace: subagentTurn
+              .filter(
+                (event) =>
+                  event.type === "tool.started" ||
+                  event.type === "tool.completed" ||
+                  event.type === "agent.completed",
+              )
+              .map((event) =>
+                event.type === "tool.started"
+                  ? {
+                      type: event.type,
+                      toolName: event.toolName,
+                      kind: event.kind,
+                      callId: event.callId,
+                      parentId: event.parentId,
+                      subagentName: event.subagentName,
+                    }
+                  : event.type === "tool.completed"
+                    ? {
+                        type: event.type,
+                        toolName: event.toolName,
+                        callId: event.callId,
+                        parentId: event.parentId,
+                        success: event.success,
+                      }
+                    : { type: event.type },
+              ),
+          }),
+        );
+      }
+    },
+  );
+
+  liveIt(
+    "executes the built-in Explore agent with child repository tools",
+    { timeout: 600_000 },
+    async () => {
+      const events: AgentEvent[] = [];
+      const permissions = new PermissionManager();
+      permissions.onDidChange(() => {
+        for (const request of permissions.list()) {
+          const toolName = request.toolName.toLowerCase();
+          permissions.resolve(
+            request.id,
+            toolName === "agent" ||
+              [
+                "read_file",
+                "read_many_files",
+                "list_directory",
+                "glob",
+                "grep_search",
+              ].includes(toolName)
+              ? "allow"
+              : "deny",
+          );
+        }
+      });
+      const client = new QwenCodeAgentClient(
+        () => ({ debug: false }),
+        permissions,
+        {
+          beforeEdit: async () => undefined,
+          afterEdit: async () => undefined,
+          completeAll: async () => undefined,
+        },
+        {
+          debug: () => undefined,
+          info: () => undefined,
+          error: () => undefined,
+        },
+      );
+      client.onEvent((event) => events.push(event));
+      await client.connect();
+      await client.run({
+        prompt:
+          "Usa explícitamente el subagente Explore en primer plano (run_in_background=false) para investigar la estructura del repositorio. Debe usar herramientas de lectura y devolver los módulos principales. No modifiques archivos.",
+        workspacePath: process.cwd(),
+        sessionId: randomUUID(),
+        resume: false,
+      });
+      await client.dispose();
+
+      const agentStart = events.find(
+        (event) => event.type === "tool.started" && event.kind === "subagent",
+      );
+      expect(agentStart?.type).toBe("tool.started");
+      if (agentStart?.type !== "tool.started") {
+        return;
+      }
+      expect(agentStart.subagentName).toBe("Explore");
+      expect(
+        events.some(
+          (event) =>
+            event.type === "tool.started" &&
+            event.parentId === agentStart.callId &&
+            event.kind !== "subagent",
+        ),
+      ).toBe(true);
+      expect(
+        events.some(
+          (event) =>
+            event.type === "tool.completed" &&
+            event.callId === agentStart.callId &&
+            event.success,
+        ),
+      ).toBe(true);
+      expect(events.at(-1)?.type).toBe("agent.completed");
+      if (process.env.QWEN_LIVE_REPORT === "1") {
+        console.info(
+          JSON.stringify({
+            exploreTrace: events
+              .filter(
+                (event) =>
+                  event.type === "tool.started" ||
+                  event.type === "tool.completed" ||
+                  event.type === "agent.completed",
+              )
+              .map((event) =>
+                event.type === "tool.started"
+                  ? {
+                      type: event.type,
+                      toolName: event.toolName,
+                      kind: event.kind,
+                      callId: event.callId,
+                      parentId: event.parentId,
+                      subagentName: event.subagentName,
+                    }
+                  : event.type === "tool.completed"
+                    ? {
+                        type: event.type,
+                        toolName: event.toolName,
+                        callId: event.callId,
+                        parentId: event.parentId,
+                        success: event.success,
+                      }
+                    : { type: event.type },
+              ),
+          }),
+        );
+      }
     },
   );
 });

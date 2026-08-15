@@ -33,6 +33,11 @@ import {
   type QwenRuntimeDiagnostics,
 } from "./QwenRuntimeDiagnostics.js";
 import {
+  formatQwenSubagentDiagnostics,
+  resolveQwenSubagents,
+  type QwenSubagentResolution,
+} from "./QwenSubagentRegistry.js";
+import {
   adaptQwenContextUsage,
   adaptQwenTurnUsage,
   aggregateQwenCallUsages,
@@ -58,6 +63,10 @@ export interface QwenChangeTracker {
 }
 
 export type QwenQueryFactory = typeof query;
+export type QwenSubagentResolver = (
+  runtime: QwenRuntimeDiagnostics,
+  workspacePath: string,
+) => Promise<QwenSubagentResolution>;
 
 const CLI_TARGET_ENVIRONMENT_VARIABLE = "QWEN_FRONTEND_CLI_TARGET";
 
@@ -73,7 +82,13 @@ export class QwenCodeAgentClient implements AgentClient {
     private readonly changes: QwenChangeTracker,
     private readonly logger: QwenClientLogger,
     private readonly queryFactory: QwenQueryFactory = query,
+    private readonly subagentResolver: QwenSubagentResolver = resolveQwenSubagents,
   ) {}
+
+  private readonly subagentResolutions = new Map<
+    string,
+    QwenSubagentResolution
+  >();
 
   async connect(): Promise<void> {
     const executablePath = this.configuration().executablePath;
@@ -219,6 +234,7 @@ export class QwenCodeAgentClient implements AgentClient {
     abortController: AbortController,
     resume: boolean,
     diagnostics: QwenDiagnosticCapture,
+    subagents: QwenSubagentResolution | undefined,
   ): QueryOptions {
     const configuration = this.configuration();
     const cliLaunch = resolveCliLaunch(
@@ -256,6 +272,9 @@ export class QwenCodeAgentClient implements AgentClient {
                 : {}),
             },
           }),
+      ...(subagents?.agents === undefined
+        ? {}
+        : { agents: [...subagents.agents] }),
       ...(resume
         ? { resume: request.sessionId }
         : { sessionId: request.sessionId }),
@@ -270,11 +289,13 @@ export class QwenCodeAgentClient implements AgentClient {
     diagnostics: QwenDiagnosticCapture,
   ): Promise<QwenExecutionResult> {
     const adapter = new QwenEventAdapter();
+    const subagents = await this.resolveSubagents(request.workspacePath);
     const options = this.createQueryOptions(
       request,
       abortController,
       resume,
       diagnostics,
+      subagents,
     );
     const prompt = createControlledPrompt(request.prompt, request.sessionId);
     const activeQuery = this.queryFactory({ prompt: prompt.messages, options });
@@ -292,6 +313,9 @@ export class QwenCodeAgentClient implements AgentClient {
       for await (const message of activeQuery) {
         if (this.configuration().debug) {
           this.logger.debug(describeSdkMessageForDebug(message));
+        }
+        if (message.type === "system" && message.subtype === "init") {
+          this.logModelSubagentDiagnostics(message, subagents);
         }
         const events = adapter.adapt(message);
         for (const event of events) {
@@ -359,6 +383,47 @@ export class QwenCodeAgentClient implements AgentClient {
       ...(resultText === undefined ? {} : { text: resultText }),
       ...(turnUsage === undefined ? {} : { turnUsage }),
     };
+  }
+
+  private async resolveSubagents(
+    workspacePath: string,
+  ): Promise<QwenSubagentResolution | undefined> {
+    const runtime = this.runtimeDiagnostics;
+    if (runtime === undefined) {
+      return undefined;
+    }
+    const key = `${runtime.cliExecutable}\u0000${workspacePath}`;
+    const cached = this.subagentResolutions.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const resolution = await this.subagentResolver(runtime, workspacePath);
+    this.subagentResolutions.set(key, resolution);
+    for (const line of formatQwenSubagentDiagnostics(resolution.diagnostics)) {
+      this.logger.info(line);
+    }
+    return resolution;
+  }
+
+  private logModelSubagentDiagnostics(
+    message: Extract<SDKMessage, { type: "system" }>,
+    resolution: QwenSubagentResolution | undefined,
+  ): void {
+    const toolAvailable = message.tools?.includes("agent")
+      ? "yes"
+      : message.tools === undefined
+        ? "unavailable"
+        : "no";
+    const modelNames = message.agents ?? "unavailable";
+    this.logger.info(`Agent tool available: ${toolAvailable}`);
+    this.logger.info(
+      `Subagent names visible to model: ${formatSubagentNames(modelNames)}`,
+    );
+    if (resolution !== undefined) {
+      this.logger.info(
+        `Subagent names available to runtime: ${formatSubagentNames(resolution.diagnostics.runtimeAgentNames)}`,
+      );
+    }
   }
 
   private async refreshContextUsage(
@@ -597,4 +662,12 @@ export function resolveCliLaunch(
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatSubagentNames(names: readonly string[] | "unavailable"): string {
+  return names === "unavailable"
+    ? "unavailable"
+    : names.length === 0
+      ? "none"
+      : names.join(", ");
 }

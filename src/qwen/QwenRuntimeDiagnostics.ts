@@ -185,14 +185,22 @@ export function formatQwenRuntimeDiagnostics(
 async function readCliVersion(executable: string): Promise<string> {
   try {
     const extension = extname(executable).toLowerCase();
-    const command = [".js", ".mjs", ".cjs"].includes(extension)
+    const javascriptCli = [".js", ".mjs", ".cjs"].includes(extension);
+    const batchCli = [".cmd", ".bat"].includes(extension);
+    const command = javascriptCli
       ? process.execPath
-      : executable;
-    const args =
-      command === process.execPath ? [executable, "--version"] : ["--version"];
+      : batchCli
+        ? (process.env.ComSpec ?? "cmd.exe")
+        : executable;
+    const args = javascriptCli
+      ? [executable, "--version"]
+      : batchCli
+        ? ["/d", "/s", "/c", `call "${executable}" --version`]
+        : ["--version"];
     const { stdout, stderr } = await execFileAsync(command, args, {
       timeout: 5_000,
       windowsHide: true,
+      ...(batchCli ? { windowsVerbatimArguments: true } : {}),
     });
     return `${stdout}${stderr}`.trim().split(/\r?\n/u)[0] ?? "unknown";
   } catch {

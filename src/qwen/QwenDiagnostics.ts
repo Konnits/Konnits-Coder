@@ -68,6 +68,13 @@ export function actionableQwenError(
   if (/ECONNREFUSED|fetch failed|connect/iu.test(combined)) {
     return "Qwen Code could not reach its configured model provider. Check the base URL and provider availability. See the Qwen Frontend Output for diagnostic details.";
   }
+  if (
+    /Subagent .* not found|No subagents available|agent registry/iu.test(
+      combined,
+    )
+  ) {
+    return "Qwen Code could not load the requested subagent. Reconnect to refresh the Qwen agent registry, then inspect the Qwen Frontend Output for the runtime and model-visible agent diagnostics.";
+  }
   if (/CLI process exited|CLI process terminated/iu.test(message)) {
     return "Qwen Code exited before starting or completing the session. See the Qwen Frontend Output for diagnostic details.";
   }

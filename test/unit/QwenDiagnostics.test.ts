@@ -34,4 +34,12 @@ describe("actionableQwenError", () => {
       "Qwen Code exited before starting or completing the session. See the Qwen Frontend Output for diagnostic details.",
     );
   });
+
+  it("makes missing subagent failures actionable", () => {
+    expect(
+      actionableQwenError(
+        'Subagent "general-purpose" not found. Available subagents:',
+      ),
+    ).toContain("could not load the requested subagent");
+  });
 });

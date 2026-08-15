@@ -8,7 +8,9 @@ import {
   resolveCliLaunch,
   type QwenChangeTracker,
   type QwenQueryFactory,
+  type QwenSubagentResolver,
 } from "../../src/qwen/QwenCodeAgentClient.js";
+import type { QwenSubagentResolution } from "../../src/qwen/QwenSubagentRegistry.js";
 
 describe("QwenCodeAgentClient", () => {
   it("keeps the exact user prompt separate from executable configuration", async () => {
@@ -64,6 +66,48 @@ describe("QwenCodeAgentClient", () => {
     expect(requests[0]?.options?.includePartialMessages).toBe(true);
     expect(requests[0]?.options?.coreTools).toBeUndefined();
     expect(requests[0]?.options?.excludeTools).toBeUndefined();
+  });
+
+  it("passes Qwen-discovered subagents as session configuration without replacing discovery", async () => {
+    const requests: Parameters<QwenQueryFactory>[0][] = [];
+    const queryFactory = vi.fn(((request) => {
+      requests.push(request);
+      return successfulQuery();
+    }) as QwenQueryFactory);
+    const resolution = subagentResolution([
+      {
+        name: "general-purpose",
+        description: "Qwen built-in general-purpose agent",
+        systemPrompt: "Use Qwen tools to complete the task.",
+        level: "session",
+        isBuiltin: true,
+      },
+    ]);
+    const resolver: QwenSubagentResolver = vi.fn(async () => resolution);
+    const client = createClient(queryFactory, {}, resolver);
+
+    await client.connect();
+    await client.run(runRequest());
+
+    expect(resolver).toHaveBeenCalledOnce();
+    expect(requests[0]?.options?.agents).toEqual(resolution.agents);
+  });
+
+  it("does not turn unavailable Qwen discovery into an empty agents array", async () => {
+    const requests: Parameters<QwenQueryFactory>[0][] = [];
+    const queryFactory = vi.fn(((request) => {
+      requests.push(request);
+      return successfulQuery();
+    }) as QwenQueryFactory);
+    const resolver: QwenSubagentResolver = vi.fn(async () =>
+      subagentResolution(undefined),
+    );
+    const client = createClient(queryFactory, {}, resolver);
+
+    await client.connect();
+    await client.run(runRequest());
+
+    expect(requests[0]?.options?.agents).toBeUndefined();
   });
 
   it("uses the Electron bootstrap only for JavaScript CLIs on Windows", () => {
@@ -327,6 +371,7 @@ describe("QwenCodeAgentClient", () => {
 function createClient(
   queryFactory: QwenQueryFactory,
   configuration: { readonly executablePath?: string } = {},
+  subagentResolver?: QwenSubagentResolver,
 ): QwenCodeAgentClient {
   return new QwenCodeAgentClient(
     () => ({ ...configuration, debug: false }),
@@ -342,7 +387,32 @@ function createClient(
       error: vi.fn<(message: string, error?: unknown) => void>(),
     },
     queryFactory,
+    subagentResolver,
   );
+}
+
+function subagentResolution(
+  agents: QwenSubagentResolution["agents"],
+): QwenSubagentResolution {
+  return {
+    ...(agents === undefined ? {} : { agents }),
+    diagnostics: {
+      workspacePath: "C:\\workspace",
+      childWorkingDirectory: "C:\\workspace",
+      childUserProfile: "C:\\Users\\test",
+      childHome: "C:\\Users\\test",
+      userAgentDirectory: "C:\\Users\\test\\.qwen\\agents",
+      projectAgentDirectory: "C:\\workspace\\.qwen\\agents",
+      userAgentsDiscovered: [],
+      projectAgentsDiscovered: [],
+      builtInAgents: agents === undefined ? "unavailable" : ["general-purpose"],
+      agentToolAvailable: "unavailable",
+      agentRuntimeAvailable: agents === undefined ? "unavailable" : "yes",
+      modelVisibleAgentNames: "unavailable",
+      runtimeAgentNames:
+        agents === undefined ? "unavailable" : ["general-purpose"],
+    },
+  };
 }
 
 function failingMissingSessionQuery(options: QueryOptions | undefined): Query {

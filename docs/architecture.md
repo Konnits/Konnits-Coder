@@ -47,7 +47,13 @@ The domain and application layers never expose Qwen SDK messages to the webview.
 6. The controller publishes a serializable view state. React only renders that state and sends user intentions.
 7. Review opens two virtual documents in `vscode.diff`. Accept keeps the working-tree result after verification. Reject restores the base only after verification.
 
-Qwen remains responsible for discovering and running subagents. The extension does not pass an `agents` override unless a future feature explicitly supplies one, and it does not create child queries. Foreground cancellation uses the parent SDK query's interrupt and abort semantics.
+Qwen remains responsible for discovering and running subagents. Before an SDK
+query, `QwenSubagentRegistry` asks the selected Qwen runtime's temporary daemon
+for its public workspace-agent definitions and passes those definitions as the
+session `agents` option required by SDK mode. Directory inspection is diagnostic
+only; Konnits does not parse or execute agent files, hard-code built-ins, or
+create child queries. Foreground cancellation uses the parent SDK query's
+interrupt and abort semantics.
 
 ### Model selection flow
 
