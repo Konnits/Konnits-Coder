@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Add rich slash-command suggestions with Qwen/runtime descriptions, usage hints, aliases, custom-command metadata, source labels, responsive rows, and zero-inference discovery.
+- Add a native VS Code Chat History picker backed by Qwen's real workspace-scoped session catalog, with search, useful titles and timestamps, and current-session identification.
+- Restore saved Qwen transcripts into the chat UI, including user and assistant messages, thinking, tool activity, and authoritative usage metadata without replaying historical tools.
+- Resume the actual Qwen session through the SDK, refresh model/context state, restore follow-latest behavior, and preserve canonical multi-root workspace selection.
+- Add confirmed per-session deletion and inactive-history cleanup with active-session protection, workspace isolation, transcript ownership checks, and Qwen sidecar cleanup.
+- Recover once from the transient Qwen extension-store shutdown lock while preserving resume semantics.
+- Add comprehensive command, history, transcript, controller, deletion-safety, scrolling, and disposable real-Qwen integration coverage.
+
 ## 0.2.0
 
 - Add Qwen-runtime-backed slash-command discovery and autocomplete with custom command metadata, filtering, and keyboard/mouse selection.
