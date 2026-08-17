@@ -1,6 +1,6 @@
 # API research
 
-Research date: 2026-08-15. Only stable public VS Code APIs, the installed SDK declarations/bundle, and official Qwen Code documentation were used.
+Research date: 2026-08-17. Only stable public VS Code APIs, the installed SDK declarations/bundle, and official Qwen Code documentation were used.
 
 ## Qwen Code
 
@@ -21,16 +21,14 @@ Confirmed SDK behavior:
   did not invoke the model when called on an SDK query with an idle input
   stream.
 - The installed SDK's command response contains names only for this runtime;
-  descriptions and source labels are not consistently exposed. Konnits keeps
-  those fields optional and uses a small presentation-only description map for
-  familiar built-ins. Runtime names remain authoritative.
+  descriptions and source labels are not consistently exposed. Konnits uses a
+  neutral runtime-reported description when metadata is absent rather than
+  maintaining a duplicate built-in catalog. Runtime names remain authoritative.
 - The installed SDK does not export a public command-registry enumeration
   beyond `supportedCommands()`. Project and user Markdown/TOML command files
   under `.qwen/commands/` and `~/.qwen/commands/` are inspected for
-  presentation frontmatter. The bundled CLI source was inspected to seed the
-  pinned built-in description/usage/alias fallback table. Project metadata
-  wins over user metadata, matching Qwen's documented precedence. Unknown
-  runtime commands remain usable but do not receive invented descriptions.
+  presentation frontmatter. Project metadata wins over user metadata, matching
+  Qwen's documented precedence. Unknown future runtime commands remain usable.
 
 The installed versions were checked directly:
 
@@ -57,11 +55,14 @@ Direct SDK/headless command checks using the same bundled CLI produced:
 
 - `/context`: success with context usage text.
 - `/model`: success with current-model text and argument help.
-- `/agents`: `error_during_execution`, unsupported in this mode; it is not
-  advertised because the active runtime did not report it.
+- `/help` and `/agents`: unsupported through the non-interactive command path.
+  Konnits now intercepts both with native adapters before starting an SDK turn.
 
-Konnits sends selected slash commands unchanged through `QwenCodeAgentClient`.
-There are currently no speculative Konnits-native command adapters.
+Konnits sends dynamically reported, supported slash commands unchanged through
+`QwenCodeAgentClient`. `/help` is generated from the unified registry;
+`/agents` and `/agents list` show the same daemon-discovered definitions used
+for `QueryOptions.agents`. Unknown commands and the explicitly known
+interactive-only `/editor` fail locally without creating a Qwen turn.
 
 ### Session history runtime validation
 
@@ -130,6 +131,19 @@ Konnits-Coder renders only these typed Qwen thinking blocks. It does not infer t
 ### Qwen-managed subagents
 
 The current official [Agent tool documentation](https://qwenlm.github.io/qwen-code-docs/en/developers/tools/task/) and [subagent documentation](https://qwenlm.github.io/qwen-code-docs/en/users/features/sub-agents/) describe Qwen-owned discovery, foreground/background execution, live progress, and project/user agent configuration. The installed SDK exposes `agents` for programmatically supplied definitions. SDK mode intentionally limits `SubagentManager` to session definitions, so Konnits-Coder starts the selected runtime's own temporary daemon, reads its public `/workspace/agents` definitions, and supplies them as `QueryOptions.agents`. This preserves Qwen's discovery, built-ins, precedence, and validation without executing agent files in the extension or passing an empty array on discovery failure.
+
+SDK 0.1.8 declarations also expose public daemon create, update, and delete
+methods. They were investigated but are not advertised in this change: a safe
+management UX still needs scope selection for shadowed project/user agents,
+field validation, built-in read-only handling, confirmation, and coordinated
+cache invalidation. `/agents create|edit|delete` therefore returns an explicit
+local limitation instead of pretending that CRUD is available.
+
+On Windows, spawning the `.mjs` daemon bootstrap as an executable fails with
+`spawn EFTYPE`. The Extension Host path now invokes `process.execPath` with
+`ELECTRON_RUN_AS_NODE=1` and the bootstrap as its first argument; the bootstrap
+then launches the selected Qwen CLI under external Node. A live regression test
+uses this exact branch and confirms that the daemon returns real agents.
 
 The direct SDK query has no `coreTools` or `excludeTools` restriction, so `agent` remains model-visible. The bundled stream adapter emits child assistant/tool/result events with the owning Agent tool call in `parent_tool_use_id`; Konnits-Coder preserves that relationship. Both `agent` and the older SDK declaration's `task` spelling are recognized for presentation. `Query.interrupt()` plus the query `AbortController` remain the only cancellation mechanism; the bundled Agent invocation propagates its abort signal to foreground children.
 

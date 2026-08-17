@@ -34,6 +34,7 @@
 - Authenticated OpenAI-compatible `/models` diagnostics and remote LM Studio setup.
 - Conflict-safe user settings and `.env` writes with workspace-override warnings.
 - Rich slash-command metadata and native Chat History picker.
+- Unified dynamic slash-command routing with native `/help`, daemon-backed `/agents` listing, and local unavailable/unknown results.
 
 ## Future, not MVP
 
@@ -43,3 +44,4 @@
 - Multi-workspace history aggregation and optional richer persisted transcript summaries.
 - Optional real-Qwen/LM Studio end-to-end suite, separate from normal tests.
 - Optional model removal after a safe credential-reference policy is defined; model refresh currently occurs on view readiness and picker actions rather than through a file watcher.
+- Native agent create/edit/delete after scope-aware validation, confirmations, read-only handling, and coordinated agent-cache refresh are designed.

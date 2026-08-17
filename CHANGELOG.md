@@ -2,6 +2,9 @@
 
 ## 0.3.0
 
+- Route slash commands through a unified registry before Qwen execution; add native `/help` and daemon-backed `/agents` listing plus local unknown/unavailable results.
+- Use the same dynamic registry for autocomplete, routing, availability, and help, without a duplicated hardcoded Qwen command catalog.
+- Fix `/agents` daemon startup in the Windows Extension Host by launching the JavaScript bootstrap through Electron's supported Node mode instead of spawning `.mjs` directly.
 - Add rich slash-command suggestions with Qwen/runtime descriptions, usage hints, aliases, custom-command metadata, source labels, responsive rows, and zero-inference discovery.
 - Add a native VS Code Chat History picker backed by Qwen's real workspace-scoped session catalog, with search, useful titles and timestamps, and current-session identification.
 - Restore saved Qwen transcripts into the chat UI, including user and assistant messages, thinking, tool activity, and authoritative usage metadata without replaying historical tools.

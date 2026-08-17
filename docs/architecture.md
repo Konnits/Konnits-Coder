@@ -27,21 +27,42 @@ positions, so URLs and ordinary paths do not open a menu.
 
 ```text
 textarea
-  ├─ requestSlashCommands → ChatViewProvider → QwenCommandProvider
-  │                                      └→ Query.supportedCommands()
+  ├─ requestSlashCommands → ChatViewProvider → SlashCommandRegistry
+  │                                         ├→ Konnits registrations
+  │                                         └→ QwenCommandProvider
+  │                                              └→ Query.supportedCommands()
   └─ searchWorkspaceReferences → ChatViewProvider → WorkspaceReferenceService
                                              └→ vscode.workspace.findFiles()
 ```
 
 `QwenCommandProvider` treats `Query.supportedCommands()` as the authoritative
-command-name source. Optional descriptions, aliases, argument hints, and
-source labels are normalized from the runtime response. Since SDK 0.1.8
-returns names only, the provider also uses the installed bundled CLI's
-source-backed built-in metadata as presentation-only fallback data and reads
-custom-command frontmatter for descriptions and argument hints. Custom
-commands are included even when the SDK response omits their metadata. None
-of these fields controls execution; selected commands still go through
-Qwen's native slash-command path.
+Qwen command-name source. Optional descriptions, aliases, argument hints, and
+source labels are normalized from the runtime response. Project and user
+custom-command frontmatter supplies metadata for those commands. The provider
+does not keep a duplicate built-in command catalog; a newly reported runtime
+command is immediately routable even when the installed runtime supplies only
+its name.
+
+The unified `SlashCommandRegistry` merges dynamic Qwen descriptors with
+explicit Konnits-native adapters and narrowly registered unavailable commands.
+The same snapshot drives autocomplete, lookup, routing, and `/help`. Before
+connection or session creation, `KonnitsCommandRouter` classifies the leading
+slash input:
+
+```text
+sendPrompt → SlashCommandParser → SlashCommandRegistry
+                                  ├─ qwen-sdk   → existing AgentClient.run
+                                  ├─ konnits    → native handler → commandResult
+                                  └─ unavailable/unknown → local commandResult
+```
+
+`/help` and `/agents [list]` are native. Their typed `commandResult` timeline
+items are standalone Konnits entries and never masquerade as model output.
+`/agents` consumes the shared `QwenSubagentCatalog`, whose cached daemon
+resolution is also injected into `QwenCodeAgentClient` for `QueryOptions.agents`.
+Command and agent caches are cleared on relevant extension configuration or
+workspace-folder changes; an open webview immediately receives the refreshed
+registry snapshot.
 
 References remain identity/display metadata in the webview. The extension
 serializes selected references with `QwenReferenceSerializer` immediately
@@ -80,7 +101,10 @@ timeline separately retains the selected reference metadata.
 - `DiffContentProvider`: exposes immutable `qwen-review:` original and proposed documents to the native diff editor.
 - `ChatViewProvider`: CSP-protected host for the React UI and typed message bridge.
 - `ComposerInputParser`: caret-aware slash/reference intent detection and replacement ranges.
-- `QwenCommandProvider`: cached runtime command discovery through the SDK control API, with bundled built-in and custom-command presentation metadata.
+- `QwenCommandProvider`: cached runtime command discovery through the SDK control API, enriched only by runtime and custom-command metadata.
+- `SlashCommandRegistry`: single merged command catalog for discovery, autocomplete, help, availability, aliases, and execution mode.
+- `KonnitsCommandRouter`: classifies command syntax before a Qwen session or turn is created and dispatches registered native handlers without a command-name switch.
+- `QwenSubagentCatalog`: shared cached daemon-backed agent definitions used by both native `/agents` listing and Qwen session options.
 - `WorkspaceReferenceService`: bounded, fuzzy, workspace-relative file/directory discovery using stable VS Code APIs.
 - `QwenReferenceSerializer`: Qwen-compatible path escaping and multi-root serialization.
 - `Configuration` and `Logger`: centralized settings and secret-conscious diagnostics.
@@ -88,12 +112,13 @@ timeline separately retains the selected reference metadata.
 ## Event and state flow
 
 1. The webview sends a validated `sendPrompt` intent.
-2. The controller checks workspace trust, creates/resumes a session, marks the UI running, and invokes `AgentClient`.
-3. SDK partial messages become separate assistant and thinking chunks. Tool blocks become structured read/search/edit/command/test/subagent activities. Qwen's `parent_tool_use_id` becomes a typed parent relationship so child thoughts and tools render under the owning Agent call.
-4. Before a sensitive tool runs, the SDK permission callback emits a permission request. Dedicated edit targets are snapshotted before an allow response is returned.
-5. When the tool completes, tracked targets are read again and become pending `ProposedFileChange` records.
-6. The controller publishes a serializable view state. React only renders that state and sends user intentions.
-7. Review opens two virtual documents in `vscode.diff`. Accept keeps the working-tree result after verification. Reject restores the base only after verification.
+2. The controller checks workspace trust and asks the command router first. Native, unavailable, and unknown commands end as local typed results.
+3. Normal prompts and Qwen-supported commands create/resume a session, mark the UI running, and invoke `AgentClient`.
+4. SDK partial messages become separate assistant and thinking chunks. Tool blocks become structured read/search/edit/command/test/subagent activities. Qwen's `parent_tool_use_id` becomes a typed parent relationship so child thoughts and tools render under the owning Agent call.
+5. Before a sensitive tool runs, the SDK permission callback emits a permission request. Dedicated edit targets are snapshotted before an allow response is returned.
+6. When the tool completes, tracked targets are read again and become pending `ProposedFileChange` records.
+7. The controller publishes a serializable view state. React only renders that state and sends user intentions.
+8. Review opens two virtual documents in `vscode.diff`. Accept keeps the working-tree result after verification. Reject restores the base only after verification.
 
 Qwen remains responsible for discovering and running subagents. Before an SDK
 query, `QwenSubagentRegistry` asks the selected Qwen runtime's temporary daemon
