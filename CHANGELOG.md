@@ -12,6 +12,8 @@
 - Add confirmed per-session deletion and inactive-history cleanup with active-session protection, workspace isolation, transcript ownership checks, and Qwen sidecar cleanup.
 - Recover once from the transient Qwen extension-store shutdown lock while preserving resume semantics.
 - Add comprehensive command, history, transcript, controller, deletion-safety, scrolling, and disposable real-Qwen integration coverage.
+- Gate image input behind `qwenFrontend.qwen.allowImageInput` (off by default) so text-only models are protected from image reads, with actionable guidance when a model rejects an image.
+- Fail stalled turns when the Qwen SDK stream goes silent instead of hanging, configurable via `qwenFrontend.qwen.streamIdleTimeoutMs` and disableable with 0.
 
 ## 0.2.0
 
