@@ -76,6 +76,11 @@
         "title": "Qwen Frontend: New Session"
       },
       {
+        "command": "qwenFrontend.openHistory",
+        "title": "Qwen Frontend: Chat History",
+        "icon": "$(history)"
+      },
+      {
         "command": "qwenFrontend.cancel",
         "title": "Qwen Frontend: Cancel"
       },
@@ -135,6 +140,11 @@
       "view/title": [
         {
           "command": "qwenFrontend.newSession",
+          "when": "view == qwenFrontend.chat",
+          "group": "navigation"
+        },
+        {
+          "command": "qwenFrontend.openHistory",
           "when": "view == qwenFrontend.chat",
           "group": "navigation"
         }

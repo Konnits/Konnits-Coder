@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentClient,
   AgentRunRequest,
+  AgentSessionRestoreRequest,
+  AgentSessionRestoreResult,
 } from "../../src/agent/AgentClient.js";
 import type { AgentEvent } from "../../src/agent/AgentEvent.js";
 import type { TokenCounter } from "../../src/agent/TokenUsage.js";
@@ -12,7 +14,14 @@ import type { Logger } from "../../src/logging/Logger.js";
 import type { ModelManagement } from "../../src/models/ModelTypes.js";
 import type { PermissionManager } from "../../src/permissions/PermissionManager.js";
 import type { QwenSessionManager } from "../../src/qwen/QwenSessionManager.js";
-import type { ChatReference } from "../../src/webview/messages.js";
+import type {
+  QwenSavedSession,
+  QwenSessionHistoryService,
+} from "../../src/qwen/QwenSessionHistoryService.js";
+import type {
+  ChatReference,
+  TimelineItem,
+} from "../../src/webview/messages.js";
 
 vi.mock("vscode", () => ({
   workspace: {
@@ -27,14 +36,21 @@ vi.mock("vscode", () => ({
   },
   env: { openExternal: vi.fn(async () => true) },
   window: {
+    createQuickPick: vi.fn(),
     showErrorMessage: vi.fn(async () => undefined),
     showInformationMessage: vi.fn(async () => undefined),
     showWarningMessage: vi.fn(async () => undefined),
   },
+  ThemeIcon: class ThemeIcon {
+    constructor(readonly id: string) {}
+  },
 }));
 
 describe("ChatController terminal states", () => {
-  beforeEach(() => vi.resetModules());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
 
   it("leaves running and reaches completed on agent completion", async () => {
     const { controller, agent } = await createController();
@@ -448,16 +464,176 @@ describe("ChatController terminal states", () => {
     expect(controller.getState().contextUsage).toBeUndefined();
     expect(models.showPicker).toHaveBeenCalledOnce();
   });
+
+  it("browses history without inference and protects the current item", async () => {
+    const vscode = await import("vscode");
+    const current = savedSession("session-current", "C:\\workspace", true);
+    const inactive = savedSession("session-old", "C:\\workspace", false);
+    const history = fakeHistory([current, inactive]);
+    const picker = new FakeQuickPick();
+    vi.mocked(vscode.window.createQuickPick).mockReturnValue(picker as never);
+    const { controller, agent } = await createController(
+      undefined,
+      undefined,
+      history.service,
+    );
+
+    await controller.openHistory();
+
+    expect(picker.shown).toBe(true);
+    expect(picker.items).toHaveLength(2);
+    expect(picker.items[0]?.buttons).toBeUndefined();
+    expect(picker.items[1]?.buttons).toHaveLength(1);
+    expect(agent.lastRequest).toBeUndefined();
+    expect(agent.restoreRequest).toBeUndefined();
+    expect(history.loadTranscript).not.toHaveBeenCalled();
+  });
+
+  it("resumes the matching canonical workspace and restores display state without a fake prompt", async () => {
+    const vscode = await import("vscode");
+    setWorkspaceFolders(vscode, ["C:\\first", "C:\\SECOND"]);
+    const session = savedSession("session-old", "c:/second", false);
+    const history = fakeHistory([session]);
+    history.loadTranscript.mockResolvedValue([
+      { type: "user", id: "old-user", text: "Old request" },
+      { type: "finalResponse", id: "old-final", text: "Old response" },
+    ]);
+    const picker = new FakeQuickPick();
+    vi.mocked(vscode.window.createQuickPick).mockReturnValue(picker as never);
+    const models = fakeModelManagement({ modelChanged: false });
+    const { controller, agent, resumeExisting } = await createController(
+      undefined,
+      models,
+      history.service,
+    );
+    agent.restoreResult = {
+      contextUsage: {
+        usedTokens: 12,
+        contextWindowTokens: 100,
+        remainingTokens: 88,
+        usedPercentage: 12,
+        accuracy: "exact",
+      },
+    };
+
+    await controller.openHistory();
+    picker.selectedItems = [picker.items[0]!];
+    picker.triggerAccept();
+
+    await vi.waitFor(() =>
+      expect(agent.restoreRequest).toEqual({
+        sessionId: "session-old",
+        workspacePath: "C:\\SECOND",
+      }),
+    );
+    expect(agent.lastRequest).toBeUndefined();
+    expect(resumeExisting).toHaveBeenCalledWith("session-old");
+    expect(controller.getState()).toMatchObject({
+      sessionId: "session-old",
+      contextUsage: { usedTokens: 12 },
+      timeline: [
+        { type: "user", id: "old-user", text: "Old request" },
+        { type: "finalResponse", id: "old-final", text: "Old response" },
+      ],
+      model: { label: "Computer B" },
+    });
+  });
+
+  it("requires confirmation, refreshes after deletion, and keeps failed deletions visible", async () => {
+    const vscode = await import("vscode");
+    const session = savedSession("session-old", "C:\\workspace", false);
+    const history = fakeHistory([session]);
+    const picker = new FakeQuickPick();
+    vi.mocked(vscode.window.createQuickPick).mockReturnValue(picker as never);
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce(
+      "Delete" as never,
+    );
+    const { controller } = await createController(
+      undefined,
+      undefined,
+      history.service,
+    );
+    await controller.openHistory();
+
+    picker.triggerItemButton(picker.items[0]!);
+
+    await vi.waitFor(() =>
+      expect(history.delete).toHaveBeenCalledWith(session),
+    );
+    expect(history.list).toHaveBeenCalledTimes(2);
+
+    const failedHistory = fakeHistory([session]);
+    failedHistory.delete.mockRejectedValue(new Error("locked"));
+    const failedPicker = new FakeQuickPick();
+    vi.mocked(vscode.window.createQuickPick).mockReturnValue(
+      failedPicker as never,
+    );
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce(
+      "Delete" as never,
+    );
+    const failed = await createController(
+      undefined,
+      undefined,
+      failedHistory.service,
+    );
+    await failed.controller.openHistory();
+
+    failedPicker.triggerItemButton(failedPicker.items[0]!);
+
+    await vi.waitFor(() =>
+      expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+        "Unable to delete Qwen conversation: locked",
+      ),
+    );
+    expect(failedHistory.list).toHaveBeenCalledOnce();
+    expect(failedPicker.items).toHaveLength(1);
+  });
+
+  it("clears inactive workspace history only after confirmation", async () => {
+    const vscode = await import("vscode");
+    setWorkspaceFolders(vscode, ["C:\\workspace"]);
+    const sessions = [
+      savedSession("session-1", "C:\\workspace", true),
+      savedSession("session-old", "C:\\workspace", false),
+    ];
+    const history = fakeHistory(sessions);
+    const picker = new FakeQuickPick();
+    vi.mocked(vscode.window.createQuickPick).mockReturnValue(picker as never);
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce(
+      "Clear" as never,
+    );
+    const { controller } = await createController(
+      undefined,
+      undefined,
+      history.service,
+    );
+    await controller.openHistory();
+
+    picker.triggerButton();
+
+    await vi.waitFor(() =>
+      expect(history.deleteInactive).toHaveBeenCalledWith(
+        ["C:\\workspace"],
+        "session-1",
+      ),
+    );
+    expect(history.list).toHaveBeenCalledTimes(2);
+  });
 });
 
 async function createController(
   tokenCounter?: TokenCounter,
   models?: ModelManagement,
+  history?: QwenSessionHistoryService,
 ) {
   const { ChatController } = await import("../../src/chat/ChatController.js");
   const agent = new FakeAgentClient();
   const disposable = (): { dispose(): void } => ({ dispose: () => undefined });
   const markEstablished = vi.fn(async () => undefined);
+  const resumeExisting = vi.fn(async (sessionId: string) => ({
+    session: { id: sessionId },
+    resume: true,
+  }));
   const sessions = {
     create: async () => ({ id: "session-2" }),
     getOrCreate: async () => ({
@@ -465,6 +641,8 @@ async function createController(
       resume: false,
     }),
     markEstablished,
+    getKnownSessionId: () => "session-1",
+    resumeExisting,
   } as unknown as QwenSessionManager;
   const controller = new ChatController(
     agent,
@@ -484,8 +662,140 @@ async function createController(
     { debug: vi.fn(), error: vi.fn() } as unknown as Logger,
     tokenCounter,
     models,
+    history,
   );
-  return { controller, agent, sessions, markEstablished };
+  return {
+    controller,
+    agent,
+    sessions,
+    markEstablished,
+    resumeExisting,
+  };
+}
+
+interface FakeHistoryPickerItem {
+  readonly session: QwenSavedSession;
+  readonly buttons?: readonly unknown[];
+}
+
+class FakeQuickPick {
+  title: string | undefined;
+  placeholder: string | undefined;
+  matchOnDescription = false;
+  matchOnDetail = false;
+  busy = false;
+  buttons: readonly unknown[] = [];
+  items: readonly FakeHistoryPickerItem[] = [];
+  selectedItems: readonly FakeHistoryPickerItem[] = [];
+  shown = false;
+  disposed = false;
+  private accept: (() => void) | undefined;
+  private itemButton:
+    | ((event: { readonly item: FakeHistoryPickerItem }) => void)
+    | undefined;
+  private button: (() => void) | undefined;
+  private hideListener: (() => void) | undefined;
+
+  onDidAccept(listener: () => void): { dispose(): void } {
+    this.accept = listener;
+    return { dispose: () => undefined };
+  }
+
+  onDidTriggerItemButton(
+    listener: (event: { readonly item: FakeHistoryPickerItem }) => void,
+  ): { dispose(): void } {
+    this.itemButton = listener;
+    return { dispose: () => undefined };
+  }
+
+  onDidTriggerButton(listener: () => void): { dispose(): void } {
+    this.button = listener;
+    return { dispose: () => undefined };
+  }
+
+  onDidHide(listener: () => void): { dispose(): void } {
+    this.hideListener = listener;
+    return { dispose: () => undefined };
+  }
+
+  show(): void {
+    this.shown = true;
+  }
+
+  hide(): void {
+    this.shown = false;
+    this.hideListener?.();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+  }
+
+  triggerAccept(): void {
+    this.accept?.();
+  }
+
+  triggerItemButton(item: FakeHistoryPickerItem): void {
+    this.itemButton?.({ item });
+  }
+
+  triggerButton(): void {
+    this.button?.();
+  }
+}
+
+function savedSession(
+  sessionId: string,
+  cwd: string,
+  isCurrent: boolean,
+): QwenSavedSession {
+  return {
+    sessionId,
+    title: sessionId,
+    cwd,
+    updatedAt: 1,
+    isCurrent,
+    transcriptPath: `C:\\qwen\\chats\\${sessionId}.jsonl`,
+  };
+}
+
+function fakeHistory(sessions: readonly QwenSavedSession[]) {
+  const list = vi.fn(async () => sessions);
+  const loadTranscript = vi.fn(
+    async (): Promise<readonly TimelineItem[]> => [],
+  );
+  const deleteSession = vi.fn(async () => undefined);
+  const deleteInactive = vi.fn(async () => ({
+    removed: sessions
+      .filter((session) => !session.isCurrent)
+      .map((session) => session.sessionId),
+    errors: [],
+  }));
+  return {
+    service: {
+      list,
+      loadTranscript,
+      delete: deleteSession,
+      deleteInactive,
+    } as unknown as QwenSessionHistoryService,
+    list,
+    loadTranscript,
+    delete: deleteSession,
+    deleteInactive,
+  };
+}
+
+function setWorkspaceFolders(
+  vscode: typeof import("vscode"),
+  paths: readonly string[],
+): void {
+  (
+    vscode.workspace as unknown as {
+      workspaceFolders: readonly {
+        readonly uri: { readonly fsPath: string };
+      }[];
+    }
+  ).workspaceFolders = paths.map((fsPath) => ({ uri: { fsPath } }));
 }
 
 function fakeModelManagement(result: {
@@ -575,6 +885,8 @@ function turnUsageEvent(inputTokens: number, outputTokens: number): AgentEvent {
 class FakeAgentClient implements AgentClient {
   private listener: ((event: AgentEvent) => void) | undefined;
   lastRequest: AgentRunRequest | undefined;
+  restoreRequest: AgentSessionRestoreRequest | undefined;
+  restoreResult: AgentSessionRestoreResult = {};
 
   connect(): Promise<void> {
     return Promise.resolve();
@@ -583,6 +895,13 @@ class FakeAgentClient implements AgentClient {
   run(request: AgentRunRequest): Promise<void> {
     this.lastRequest = request;
     return Promise.resolve();
+  }
+
+  restoreSession(
+    request: AgentSessionRestoreRequest,
+  ): Promise<AgentSessionRestoreResult> {
+    this.restoreRequest = request;
+    return Promise.resolve(this.restoreResult);
   }
 
   cancel(): Promise<void> {

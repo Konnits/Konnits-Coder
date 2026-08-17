@@ -30,6 +30,10 @@ export class QwenDiagnosticCapture {
     return /No saved session found with ID/iu.test(this.captured);
   }
 
+  containsExtensionStoreBusy(): boolean {
+    return /Extension store is busy at/iu.test(this.captured);
+  }
+
   summary(): string | undefined {
     const relevant = this.captured
       .split(/\r?\n/u)
@@ -37,7 +41,7 @@ export class QwenDiagnosticCapture {
       .filter(
         (line) =>
           line.length > 0 &&
-          /error|failed|missing|not found|no saved session|unauthori[sz]ed|forbidden|ECONN|fetch/iu.test(
+          /error|failed|missing|not found|no saved session|extension store is busy|unauthori[sz]ed|forbidden|ECONN|fetch/iu.test(
             line,
           ),
       );

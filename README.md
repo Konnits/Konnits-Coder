@@ -76,6 +76,8 @@ Konnits-Coder currently provides:
 - Context-window usage display.
 - Per-message token estimates.
 - Qwen-reported turn and context token usage.
+- Rich slash-command suggestions with descriptions, usage, aliases, and source labels.
+- Workspace-scoped Qwen chat history with search, transcript restore, per-session deletion, and inactive-history cleanup.
 - Workspace Trust integration.
 - Diagnostics through the `Qwen Frontend` Output channel.
 - Support for local and remote OpenAI-compatible model endpoints.
@@ -83,8 +85,10 @@ Konnits-Coder currently provides:
 ## Prompt composer
 
 Type `/` at a command position to browse commands reported by the active Qwen
-runtime. Select a command with the mouse, Arrow keys, Enter, or Tab; the
-selected command is sent through Qwen's normal slash-command path.
+runtime. Suggestions include runtime-backed metadata when available and
+presentation metadata from the bundled Qwen command definitions or custom
+command frontmatter. Select a command with the mouse, Arrow keys, Enter, or
+Tab; the selected command is sent through Qwen's normal slash-command path.
 
 Type `@` to search workspace files and directories. Selected references appear
 as removable chips and are serialized with Qwen's native `@` syntax only when
@@ -98,6 +102,18 @@ Examples:
 ```
 
 Autocomplete searches do not call the model or transmit file contents.
+
+## Chat history
+
+Use the history button in the Chat view title bar, or run **Qwen Frontend:
+Chat History**, to search conversations stored by Qwen for the open workspace.
+Selecting an entry restores its saved transcript in the chat and reattaches
+the actual Qwen session without sending a model prompt. The picker can delete
+an inactive conversation individually or clear all inactive conversations
+after confirmation. The current active session is protected from deletion.
+
+History remains Qwen-owned: Konnits-Coder reads Qwen's JSONL session list and
+transcript, and never stores a second full chat database.
 
 ---
 

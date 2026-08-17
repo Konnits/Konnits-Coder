@@ -30,6 +30,15 @@ export class QwenSessionManager {
     return { session: await this.create(), resume: false };
   }
 
+  getKnownSessionId(): string | undefined {
+    const candidate =
+      this.current ?? this.state.get<AgentSession>(this.storageKey());
+    return isStoredSession(candidate, this.workspaceKey) &&
+      candidate.established !== false
+      ? candidate.id
+      : undefined;
+  }
+
   async create(): Promise<AgentSession> {
     const session: AgentSession = {
       id: randomUUID(),
@@ -40,6 +49,19 @@ export class QwenSessionManager {
     this.current = session;
     await this.state.update(this.storageKey(), session);
     return session;
+  }
+
+  async resumeExisting(sessionId: string): Promise<SessionSelection> {
+    const existing = this.current?.id === sessionId ? this.current : undefined;
+    const session: AgentSession = existing ?? {
+      id: sessionId,
+      workspaceKey: this.workspaceKey,
+      createdAt: Date.now(),
+      established: true,
+    };
+    this.current = { ...session, established: true };
+    await this.state.update(this.storageKey(), this.current);
+    return { session: this.current, resume: true };
   }
 
   async markEstablished(sessionId: string): Promise<void> {

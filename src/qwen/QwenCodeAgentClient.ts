@@ -15,6 +15,8 @@ import {
 } from "@qwen-code/sdk";
 import type {
   AgentClient,
+  AgentSessionRestoreRequest,
+  AgentSessionRestoreResult,
   AgentRunRequest,
   Disposable,
 } from "../agent/AgentClient.js";
@@ -67,6 +69,7 @@ export type QwenSubagentResolver = (
   runtime: QwenRuntimeDiagnostics,
   workspacePath: string,
 ) => Promise<QwenSubagentResolution>;
+export type QwenRuntimeCleanupWait = () => Promise<void>;
 
 const CLI_TARGET_ENVIRONMENT_VARIABLE = "QWEN_FRONTEND_CLI_TARGET";
 
@@ -82,6 +85,7 @@ export class QwenCodeAgentClient implements AgentClient {
     private readonly logger: QwenClientLogger,
     private readonly queryFactory: QwenQueryFactory = query,
     private readonly subagentResolver: QwenSubagentResolver = resolveQwenSubagents,
+    private readonly runtimeCleanupWait: QwenRuntimeCleanupWait = waitForRuntimeCleanup,
   ) {}
 
   private readonly subagentResolutions = new Map<
@@ -177,6 +181,24 @@ export class QwenCodeAgentClient implements AgentClient {
             false,
             diagnostics,
           );
+        } else if (
+          !turn.cancellationRequested &&
+          !abortController.signal.aborted &&
+          isExtensionStoreBusy(error, diagnostics)
+        ) {
+          this.logger.info(
+            "The Qwen extension store is still closing; retrying once.",
+          );
+          await this.closeActiveQuery(turn);
+          diagnostics.clear();
+          await this.runtimeCleanupWait();
+          executionResult = await this.executeQuery(
+            request,
+            runId,
+            turn,
+            request.resume,
+            diagnostics,
+          );
         } else {
           throw error;
         }
@@ -227,6 +249,56 @@ export class QwenCodeAgentClient implements AgentClient {
         this.activeTurn = undefined;
       }
       this.logger.debug(`Turn disposed: turnId=${runId}.`);
+    }
+  }
+
+  async restoreSession(
+    request: AgentSessionRestoreRequest,
+  ): Promise<AgentSessionRestoreResult> {
+    if (this.activeTurn !== undefined) {
+      throw new Error("A Qwen operation is already running.");
+    }
+    const diagnostics = new QwenDiagnosticCapture(
+      this.runtimeDiagnostics?.secrets ?? [],
+    );
+    const options = this.createQueryOptions(
+      {
+        prompt: "",
+        workspacePath: request.workspacePath,
+        sessionId: request.sessionId,
+        resume: true,
+      },
+      new AbortController(),
+      true,
+      diagnostics,
+      undefined,
+    );
+    const activeQuery = this.queryFactory({
+      prompt: createIdlePrompt(),
+      options,
+    });
+    try {
+      await activeQuery.initialized;
+      const contextUsage = adaptQwenContextUsage(
+        await activeQuery.getContextUsage(false),
+      );
+      this.logger.debug(
+        `Qwen session restored without inference: sessionId=${request.sessionId}.`,
+      );
+      return contextUsage === undefined ? {} : { contextUsage };
+    } catch (error) {
+      const diagnostic = diagnostics.summary();
+      throw new Error(actionableQwenError(toErrorMessage(error), diagnostic), {
+        cause: error,
+      });
+    } finally {
+      await activeQuery
+        .close()
+        .catch((error: unknown) =>
+          this.logger.debug(
+            `Qwen session restore close reported: ${toErrorMessage(error)}`,
+          ),
+        );
     }
   }
 
@@ -641,6 +713,27 @@ function createControlledPrompt(
     })(),
     finish: () => finish?.(),
   };
+}
+
+async function* createIdlePrompt(): AsyncIterable<SDKUserMessage> {
+  yield* [];
+  await new Promise<void>(() => undefined);
+}
+
+async function waitForRuntimeCleanup(): Promise<void> {
+  // SDK 0.1.8 escalates process shutdown after five seconds. A retry before
+  // that boundary can race the global Qwen extension-store lock.
+  await new Promise<void>((resolve) => setTimeout(resolve, 5_250));
+}
+
+function isExtensionStoreBusy(
+  error: unknown,
+  diagnostics: QwenDiagnosticCapture,
+): boolean {
+  return (
+    diagnostics.containsExtensionStoreBusy() ||
+    /Extension store is busy at/iu.test(toErrorMessage(error))
+  );
 }
 
 function readAssistantUsage(message: SDKAssistantMessage): Usage | undefined {

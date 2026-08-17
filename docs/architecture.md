@@ -35,11 +35,13 @@ textarea
 
 `QwenCommandProvider` treats `Query.supportedCommands()` as the authoritative
 command-name source. Optional descriptions, aliases, argument hints, and
-source labels are normalized from the runtime response; known descriptions are
-presentation-only metadata and never control execution. Project and user
-custom command files are inspected only for names and frontmatter descriptions
-after the runtime reports the command as available. Konnits does not parse or
-execute custom command bodies.
+source labels are normalized from the runtime response. Since SDK 0.1.8
+returns names only, the provider also uses the installed bundled CLI's
+source-backed built-in metadata as presentation-only fallback data and reads
+custom-command frontmatter for descriptions and argument hints. Custom
+commands are included even when the SDK response omits their metadata. None
+of these fields controls execution; selected commands still go through
+Qwen's native slash-command path.
 
 References remain identity/display metadata in the webview. The extension
 serializes selected references with `QwenReferenceSerializer` immediately
@@ -66,6 +68,8 @@ timeline separately retains the selected reference metadata.
 - `QwenEventAdapter`: converts streaming text/thinking blocks, assistant blocks, tool calls/results, and Qwen subagent parent IDs to domain events.
 - `ContextUsageRefreshScheduler`: debounces boundary-driven context control requests and serializes them so `getContextUsage()` is never called concurrently.
 - `QwenSessionManager`: persists only the workspace session identifier; chat bodies and file content are not persisted.
+- `QwenSessionHistoryService`: invokes Qwen's machine-readable session list, filters entries to open workspace roots, loads historical JSONL as display-only timeline data, and removes only validated Qwen-owned transcript/sidecar/file-history paths.
+- `QwenTranscriptLoader`: translates persisted Qwen records into the internal timeline without executing historical tools or passing raw protocol records to React.
 - `ChatController`: application state machine, typed webview message dispatch, permissions, and coordination of agent events with change tracking.
 - `ModelManagementController`: native VS Code quick-pick/input flows for selecting, adding, editing, testing, and opening Qwen model configuration. Credential entry is a native password input and never enters webview state.
 - `QwenSettingsService`: parses and enumerates the installed Qwen settings schema, preserves unknown fields, detects workspace overrides and concurrent edits, creates a one-time backup, and atomically replaces user settings and `.env` files.
@@ -76,7 +80,7 @@ timeline separately retains the selected reference metadata.
 - `DiffContentProvider`: exposes immutable `qwen-review:` original and proposed documents to the native diff editor.
 - `ChatViewProvider`: CSP-protected host for the React UI and typed message bridge.
 - `ComposerInputParser`: caret-aware slash/reference intent detection and replacement ranges.
-- `QwenCommandProvider`: cached runtime command discovery through the SDK control API, with custom-command presentation metadata.
+- `QwenCommandProvider`: cached runtime command discovery through the SDK control API, with bundled built-in and custom-command presentation metadata.
 - `WorkspaceReferenceService`: bounded, fuzzy, workspace-relative file/directory discovery using stable VS Code APIs.
 - `QwenReferenceSerializer`: Qwen-compatible path escaping and multi-root serialization.
 - `Configuration` and `Logger`: centralized settings and secret-conscious diagnostics.

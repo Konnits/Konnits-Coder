@@ -15,6 +15,7 @@ import { PermissionManager } from "./permissions/PermissionManager.js";
 import { QwenCodeAgentClient } from "./qwen/QwenCodeAgentClient.js";
 import { QwenCommandProvider } from "./qwen/QwenCommandProvider.js";
 import { QwenSessionManager } from "./qwen/QwenSessionManager.js";
+import { QwenSessionHistoryService } from "./qwen/QwenSessionHistoryService.js";
 
 export function activate(context: vscode.ExtensionContext): void {
   const configuration = new Configuration();
@@ -35,6 +36,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const workspaceKey =
     vscode.workspace.workspaceFolders?.[0]?.uri.toString() ?? "no-workspace";
   const sessions = new QwenSessionManager(context.workspaceState, workspaceKey);
+  const history = new QwenSessionHistoryService(
+    () => configuration.getQwenClientConfiguration(),
+    logger,
+  );
   const diff = new DiffContentProvider(changes);
   const commandProvider = new QwenCommandProvider(
     () => configuration.getQwenClientConfiguration(),
@@ -56,6 +61,7 @@ export function activate(context: vscode.ExtensionContext): void {
     logger,
     undefined,
     modelManagement,
+    history,
   );
   const view = new ChatViewProvider(
     context.extensionUri,
@@ -81,6 +87,9 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("qwenFrontend.newSession", () =>
       controller.newSession(),
+    ),
+    vscode.commands.registerCommand("qwenFrontend.openHistory", () =>
+      controller.openHistory(),
     ),
     vscode.commands.registerCommand("qwenFrontend.cancel", () =>
       controller.handleMessage({ type: "cancel" }),

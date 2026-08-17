@@ -26,9 +26,11 @@ Confirmed SDK behavior:
   familiar built-ins. Runtime names remain authoritative.
 - The installed SDK does not export a public command-registry enumeration
   beyond `supportedCommands()`. Project and user Markdown/TOML command files
-  under `.qwen/commands/` and `~/.qwen/commands/` are inspected only to attach
-  descriptions/source labels to names already reported by Qwen. Project
-  metadata wins over user metadata, matching Qwen's documented precedence.
+  under `.qwen/commands/` and `~/.qwen/commands/` are inspected for
+  presentation frontmatter. The bundled CLI source was inspected to seed the
+  pinned built-in description/usage/alias fallback table. Project metadata
+  wins over user metadata, matching Qwen's documented precedence. Unknown
+  runtime commands remain usable but do not receive invented descriptions.
 
 The installed versions were checked directly:
 
@@ -60,6 +62,37 @@ Direct SDK/headless command checks using the same bundled CLI produced:
 
 Konnits sends selected slash commands unchanged through `QwenCodeAgentClient`.
 There are currently no speculative Konnits-native command adapters.
+
+### Session history runtime validation
+
+The installed bundled CLI exposes `qwen sessions list --json --limit N` as
+JSON Lines. Each entry includes the session ID, prompt/title data, update
+time, workspace cwd, and exact transcript path. `QwenSessionHistoryService`
+uses that command rather than scanning arbitrary directories, filters the
+result against canonical open workspace roots, and sorts by Qwen's mtime.
+
+Historical transcripts are Qwen JSONL records. The extension maps user text,
+assistant text, thinking, function calls, tool results, and recorded usage into
+the existing internal timeline. It ignores telemetry/system records and never
+replays a historical tool call. Selecting a history item first loads this
+display transcript, then uses an SDK query with `resume` and an empty async
+input stream to reattach and read context usage without inference.
+
+A disposable live integration test confirmed that two real Qwen sessions in a
+temporary workspace can be listed, restored into the internal timeline,
+continued with the original model context, cleared while preserving the marked
+current session, and deleted completely. SDK 0.1.8 can briefly retain Qwen's
+global extension-store lock after an idle restore query closes; its transport
+uses a five-second forced-shutdown boundary. `QwenCodeAgentClient` recognizes
+that exact transient error and retries once after the shutdown window without
+changing the requested resume/session ID semantics.
+
+Deletion follows the installed Qwen session service behavior: the validated
+UUID-named active/archive transcript, matching worktree sidecars, exact
+`file-history/<sessionId>` directory, and that session's organization entry
+are removed. The first transcript record must match both the selected session
+ID and workspace before deletion proceeds. The current session is not offered
+for deletion from the picker.
 
 ### Native `@` validation
 

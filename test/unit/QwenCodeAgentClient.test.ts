@@ -68,6 +68,41 @@ describe("QwenCodeAgentClient", () => {
     expect(requests[0]?.options?.excludeTools).toBeUndefined();
   });
 
+  it("reattaches a saved session without emitting a user prompt", async () => {
+    const requests: Parameters<QwenQueryFactory>[0][] = [];
+    const close = vi.fn(async () => undefined);
+    const query = {
+      close,
+      getContextUsage: vi.fn(async () => ({
+        totalTokens: 12,
+        contextWindowSize: 100,
+        isEstimated: false,
+      })),
+      isClosed: () => false,
+    } as unknown as Query;
+    const queryFactory = vi.fn(((request) => {
+      requests.push(request);
+      return query;
+    }) as QwenQueryFactory);
+    const client = createClient(queryFactory);
+
+    const result = await client.restoreSession({
+      sessionId: "66666666-6666-4666-8666-666666666666",
+      workspacePath: "C:\\workspace",
+    });
+
+    expect(result.contextUsage).toMatchObject({
+      usedTokens: 12,
+      contextWindowTokens: 100,
+    });
+    expect(requests).toHaveLength(1);
+    expect(typeof requests[0]?.prompt).not.toBe("string");
+    expect(requests[0]?.options?.resume).toBe(
+      "66666666-6666-4666-8666-666666666666",
+    );
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("passes Qwen-discovered subagents as session configuration without replacing discovery", async () => {
     const requests: Parameters<QwenQueryFactory>[0][] = [];
     const queryFactory = vi.fn(((request) => {
@@ -392,6 +427,54 @@ describe("QwenCodeAgentClient", () => {
       "The persisted Qwen session does not exist; retrying once as a new session.",
     );
   });
+
+  it("retries a transient extension-store lock without changing resume semantics", async () => {
+    const optionsSeen: QueryOptions[] = [];
+    const queryFactory = vi.fn(((request) => {
+      optionsSeen.push(request.options ?? {});
+      return optionsSeen.length === 1
+        ? failingExtensionStoreQuery()
+        : successfulQuery();
+    }) as QwenQueryFactory);
+    const logger = {
+      debug: vi.fn<(message: string) => void>(),
+      info: vi.fn<(message: string) => void>(),
+      error: vi.fn<(message: string, error?: unknown) => void>(),
+    };
+    const client = new QwenCodeAgentClient(
+      () => ({ debug: false }),
+      new PermissionManager(),
+      {
+        beforeEdit: vi.fn(async () => undefined),
+        afterEdit: vi.fn(async () => undefined),
+        completeAll: vi.fn(async () => undefined),
+      },
+      logger,
+      queryFactory,
+      undefined,
+      async () => undefined,
+    );
+    const events: string[] = [];
+    client.onEvent((event) => events.push(event.type));
+
+    await client.run({
+      prompt: "continue",
+      workspacePath: "C:\\workspace",
+      sessionId: "00000000-0000-4000-8000-000000000000",
+      resume: true,
+    });
+
+    expect(queryFactory).toHaveBeenCalledTimes(2);
+    expect(optionsSeen.map((options) => options.resume)).toEqual([
+      "00000000-0000-4000-8000-000000000000",
+      "00000000-0000-4000-8000-000000000000",
+    ]);
+    expect(events).toContain("agent.completed");
+    expect(events).not.toContain("agent.failed");
+    expect(logger.info).toHaveBeenCalledWith(
+      "The Qwen extension store is still closing; retrying once.",
+    );
+  });
 });
 
 function createClient(
@@ -447,6 +530,16 @@ function failingMissingSessionQuery(options: QueryOptions | undefined): Query {
       "No saved session found with ID 00000000-0000-4000-8000-000000000000.",
     );
     yield await Promise.reject(new Error("CLI process exited with code 1"));
+  });
+}
+
+function failingExtensionStoreQuery(): Query {
+  return fakeQuery(async function* () {
+    yield await Promise.reject(
+      new Error(
+        "Extension store is busy at C:\\Users\\test\\.qwen\\extension-store.",
+      ),
+    );
   });
 }
 

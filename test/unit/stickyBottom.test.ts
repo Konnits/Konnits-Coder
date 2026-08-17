@@ -31,6 +31,17 @@ describe("sticky bottom controller", () => {
     expect(controller.isFollowing()).toBe(true);
   });
 
+  it("re-enables follow only when the active session changes", () => {
+    const controller = new StickyBottomController();
+    expect(controller.observeContext("session-a")).toBe(true);
+    controller.observeUserScroll(metrics(2_000, 100, 500));
+    expect(controller.observeContext("session-a")).toBe(false);
+    expect(controller.isFollowing()).toBe(false);
+
+    expect(controller.observeContext("session-b")).toBe(true);
+    expect(controller.isFollowing()).toBe(true);
+  });
+
   it("clamps negative bottom distance caused by browser rounding", () => {
     expect(distanceFromBottom(metrics(999, 600, 400))).toBe(0);
   });

@@ -91,6 +91,7 @@ export function App(): React.JSX.Element {
   );
   const { contentRef, following, jumpToLatest } = useStickyBottom(
     `${timelineScrollKey}|${permissionScrollKey}|${state.status}|${String(state.changes.length)}`,
+    state.sessionId ?? "no-session",
   );
 
   useEffect(() => {

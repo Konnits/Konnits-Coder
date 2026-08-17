@@ -15,6 +15,7 @@ export function distanceFromBottom(metrics: ScrollMetrics): number {
 
 export class StickyBottomController {
   private following = true;
+  private contextKey: string | undefined;
 
   constructor(private readonly threshold = 80) {}
 
@@ -34,9 +35,21 @@ export class StickyBottomController {
   jumpToLatest(): void {
     this.following = true;
   }
+
+  observeContext(contextKey: string): boolean {
+    if (this.contextKey === contextKey) {
+      return false;
+    }
+    this.contextKey = contextKey;
+    this.following = true;
+    return true;
+  }
 }
 
-export function useStickyBottom(contentVersion: string): {
+export function useStickyBottom(
+  contentVersion: string,
+  contextKey: string,
+): {
   readonly contentRef: React.RefObject<HTMLElement | null>;
   readonly following: boolean;
   readonly jumpToLatest: () => void;
@@ -111,8 +124,11 @@ export function useStickyBottom(contentVersion: string): {
 
   useEffect(() => {
     void contentVersion;
+    if (controllerRef.current.observeContext(contextKey)) {
+      setFollowing(true);
+    }
     anchor();
-  }, [anchor, contentVersion]);
+  }, [anchor, contentVersion, contextKey]);
 
   useEffect(
     () => () => {

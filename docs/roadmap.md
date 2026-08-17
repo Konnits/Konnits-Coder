@@ -23,6 +23,7 @@
 
 - Persist workspace-scoped session IDs.
 - Add explicit new-session behavior without persisting transcript or file contents.
+- Browse Qwen-owned workspace history, restore transcripts and sessions, and safely delete inactive sessions.
 
 ## M10 — UX polish and packaging
 
@@ -32,12 +33,13 @@
 - Compact active-model selector plus native select/add/edit/open flows for Qwen-owned provider configuration.
 - Authenticated OpenAI-compatible `/models` diagnostics and remote LM Studio setup.
 - Conflict-safe user settings and `.env` writes with workspace-override warnings.
+- Rich slash-command metadata and native Chat History picker.
 
 ## Future, not MVP
 
 - A daemon-backed `AgentClient` after Qwen's permission/reconnection contract is stable.
 - Safe attribution for command-generated file changes, likely using a Qwen-owned worktree or supported pre-apply edit protocol.
 - Multi-root session selection and multiple concurrent sessions.
-- Persisted transcript summaries and reconnection replay.
+- Multi-workspace history aggregation and optional richer persisted transcript summaries.
 - Optional real-Qwen/LM Studio end-to-end suite, separate from normal tests.
 - Optional model removal after a safe credential-reference policy is defined; model refresh currently occurs on view readiness and picker actions rather than through a file watcher.

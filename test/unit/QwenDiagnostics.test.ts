@@ -23,6 +23,16 @@ describe("QwenDiagnosticCapture", () => {
     ).toBeUndefined();
     expect(capture.summary()).toBeUndefined();
   });
+
+  it("recognizes the transient Qwen extension-store lock", () => {
+    const capture = new QwenDiagnosticCapture();
+    capture.add(
+      "Extension store is busy at C:\\Users\\test\\.qwen\\extension-store.",
+    );
+
+    expect(capture.containsExtensionStoreBusy()).toBe(true);
+    expect(capture.summary()).toContain("Extension store is busy");
+  });
 });
 
 describe("actionableQwenError", () => {

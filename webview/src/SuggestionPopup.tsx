@@ -35,7 +35,14 @@ export function SuggestionPopup({
             index={index}
             selected={index === highlightedIndex}
             main={command.name}
-            detail={formatCommandDetail(command)}
+            source={formatCommandSource(command.source)}
+            {...(command.description === undefined
+              ? {}
+              : { description: command.description })}
+            {...(command.usage === undefined ? {} : { usage: command.usage })}
+            {...(command.aliases === undefined
+              ? {}
+              : { aliases: command.aliases })}
             onHighlight={onHighlight}
             onSelect={() => onSelectCommand(command)}
           />
@@ -47,7 +54,7 @@ export function SuggestionPopup({
             index={index}
             selected={index === highlightedIndex}
             main={`@${reference.displayName}`}
-            detail={reference.kind}
+            source={reference.kind}
             onHighlight={onHighlight}
             onSelect={() => onSelectReference(reference)}
           />
@@ -61,7 +68,10 @@ interface SuggestionItemProps {
   readonly index: number;
   readonly selected: boolean;
   readonly main: string;
-  readonly detail: string;
+  readonly source: string;
+  readonly description?: string;
+  readonly usage?: string;
+  readonly aliases?: readonly string[];
   readonly onHighlight: (index: number) => void;
   readonly onSelect: () => void;
 }
@@ -70,7 +80,10 @@ function SuggestionItem({
   index,
   selected,
   main,
-  detail,
+  source,
+  description,
+  usage,
+  aliases,
   onHighlight,
   onSelect,
 }: SuggestionItemProps): React.JSX.Element {
@@ -83,14 +96,42 @@ function SuggestionItem({
       onMouseEnter={() => onHighlight(index)}
       onClick={onSelect}
     >
-      <span className="suggestion-main">{main}</span>
-      <span className="suggestion-detail">{detail}</span>
+      <span className="suggestion-main-row">
+        <span className="suggestion-main">{main}</span>
+        <span className="suggestion-source">{source}</span>
+      </span>
+      {description !== undefined && (
+        <span className="suggestion-description">{description}</span>
+      )}
+      {usage !== undefined && (
+        <span className="suggestion-usage">Usage: {usage}</span>
+      )}
+      {aliases !== undefined && aliases.length > 0 && (
+        <span className="suggestion-usage">
+          Aliases: {aliases.map((alias) => `/${alias}`).join(", ")}
+        </span>
+      )}
     </button>
   );
 }
 
-function formatCommandDetail(command: SlashCommandSuggestion): string {
-  return [command.description, command.argumentHint, command.source]
-    .filter((value): value is string => value !== undefined && value.length > 0)
-    .join(" · ");
+function formatCommandSource(source: SlashCommandSuggestion["source"]): string {
+  switch (source) {
+    case "builtin":
+      return "Built-in";
+    case "project":
+      return "Project";
+    case "user":
+      return "User";
+    case "skill":
+      return "Skill";
+    case "mcp":
+      return "MCP";
+    case "extension":
+      return "Extension";
+    case "qwen":
+      return "Qwen";
+    case "unknown":
+      return "Unknown";
+  }
 }

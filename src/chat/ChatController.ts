@@ -19,6 +19,11 @@ import type {
 } from "../models/ModelTypes.js";
 import type { PermissionManager } from "../permissions/PermissionManager.js";
 import type { QwenSessionManager } from "../qwen/QwenSessionManager.js";
+import type {
+  QwenSavedSession,
+  QwenSessionHistoryService,
+} from "../qwen/QwenSessionHistoryService.js";
+import { canonicalWorkspacePath } from "../qwen/QwenSessionHistoryService.js";
 import { serializeQwenPrompt } from "../qwen/QwenReferenceSerializer.js";
 import {
   parseWebviewMessage,
@@ -54,6 +59,7 @@ export class ChatController implements vscode.Disposable {
     private readonly logger: Logger,
     private readonly tokenCounter: TokenCounter = new EstimatedTokenCounter(),
     private readonly models?: ModelManagement,
+    private readonly history?: QwenSessionHistoryService,
   ) {
     this.disposables.push(
       this.agent.onEvent((event) => this.handleAgentEvent(event)),
@@ -146,12 +152,215 @@ export class ChatController implements vscode.Disposable {
     this.setStatus(this.connected ? "connected" : "idle");
   }
 
+  async openHistory(): Promise<void> {
+    if (isBusy(this.status)) {
+      await vscode.window.showWarningMessage(
+        "Cancel the active Qwen operation before opening chat history.",
+      );
+      return;
+    }
+    this.requireTrustedWorkspace();
+    if (this.history === undefined) {
+      await vscode.window.showErrorMessage(
+        "Qwen chat history is unavailable in this installation.",
+      );
+      return;
+    }
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders === undefined || folders.length === 0) {
+      await vscode.window.showWarningMessage(
+        "Open a workspace folder before viewing Qwen chat history.",
+      );
+      return;
+    }
+
+    const picker = vscode.window.createQuickPick<HistoryPickerItem>();
+    picker.title = "Qwen Chat History";
+    picker.placeholder = "Search chats…";
+    picker.matchOnDescription = true;
+    picker.matchOnDetail = true;
+    picker.buttons = [
+      {
+        iconPath: new vscode.ThemeIcon("clear-all"),
+        tooltip: "Clear inactive conversations",
+      },
+    ];
+    let sessions: readonly QwenSavedSession[] = [];
+    let closed = false;
+    const workspacePaths = folders.map((folder) => folder.uri.fsPath);
+    const knownSessionId = (): string | undefined =>
+      this.sessionId ?? this.sessions.getKnownSessionId();
+    const refresh = async (): Promise<void> => {
+      picker.busy = true;
+      try {
+        sessions =
+          (await this.history?.list(workspacePaths, knownSessionId())) ?? [];
+        picker.items = sessions.map(toHistoryPickerItem);
+      } catch (error) {
+        this.logger.error("Unable to load Qwen chat history.", error);
+        picker.items = [];
+        await vscode.window.showErrorMessage(
+          `Unable to load Qwen chat history: ${toErrorMessage(error)}`,
+        );
+      } finally {
+        picker.busy = false;
+      }
+    };
+    picker.onDidAccept(() => {
+      const selected = picker.selectedItems[0]?.session;
+      if (selected === undefined || closed) {
+        return;
+      }
+      closed = true;
+      picker.hide();
+      void this.resumeSavedSession(selected);
+    });
+    picker.onDidTriggerItemButton((event) => {
+      if (closed || event.item.session.isCurrent) {
+        return;
+      }
+      void this.deleteSavedSession(event.item.session, refresh);
+    });
+    picker.onDidTriggerButton(() => {
+      if (closed) {
+        return;
+      }
+      void this.clearInactiveHistory(workspacePaths, refresh, sessions);
+    });
+    picker.onDidHide(() => {
+      closed = true;
+      picker.dispose();
+    });
+    await refresh();
+    picker.show();
+  }
+
   async manageModels(): Promise<void> {
     await this.runModelAction(() => this.models?.showPicker());
   }
 
   async addModel(): Promise<void> {
     await this.runModelAction(() => this.models?.addModel());
+  }
+
+  private async resumeSavedSession(session: QwenSavedSession): Promise<void> {
+    if (this.history === undefined) {
+      return;
+    }
+    const folders = vscode.workspace.workspaceFolders;
+    const sessionWorkspace = await canonicalWorkspacePath(session.cwd);
+    const folderMatches = await Promise.all(
+      (folders ?? []).map(async (candidate) => ({
+        candidate,
+        matches:
+          (await canonicalWorkspacePath(candidate.uri.fsPath)) ===
+          sessionWorkspace,
+      })),
+    );
+    const folder = folderMatches.find(({ matches }) => matches)?.candidate;
+    if (folder === undefined) {
+      await vscode.window.showErrorMessage(
+        "The saved Qwen conversation belongs to a workspace that is no longer open.",
+      );
+      return;
+    }
+    try {
+      const transcript = await this.history.loadTranscript(session);
+      if (!this.connected && !(await this.connect())) {
+        return;
+      }
+      if (this.agent.restoreSession === undefined) {
+        throw new Error(
+          "The active Qwen client cannot restore persisted sessions without inference.",
+        );
+      }
+      const result = await this.agent.restoreSession({
+        sessionId: session.sessionId,
+        workspacePath: folder.uri.fsPath,
+      });
+      const selection = await this.sessions.resumeExisting(session.sessionId);
+      this.sessionId = selection.session.id;
+      this.timeline.splice(0, this.timeline.length, ...transcript);
+      this.contextUsage = result.contextUsage;
+      this.contextSessionId =
+        result.contextUsage === undefined ? undefined : session.sessionId;
+      this.changes.clearSettled();
+      await this.refreshModels();
+      this.setStatus("connected");
+    } catch (error) {
+      this.logger.error(
+        `Unable to restore Qwen conversation ${session.sessionId}.`,
+        error,
+      );
+      this.addError(
+        `Unable to restore Qwen conversation: ${toErrorMessage(error)}`,
+      );
+      await vscode.window.showErrorMessage(
+        `Unable to restore Qwen conversation: ${toErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private async deleteSavedSession(
+    session: QwenSavedSession,
+    refresh: () => Promise<void>,
+  ): Promise<void> {
+    const confirmation = await vscode.window.showWarningMessage(
+      `Delete the Qwen conversation “${session.title}”? Its saved transcript and Qwen session files will be removed.`,
+      { modal: true },
+      "Delete",
+    );
+    if (confirmation !== "Delete" || this.history === undefined) {
+      return;
+    }
+    try {
+      await this.history.delete(session);
+      await refresh();
+    } catch (error) {
+      await vscode.window.showErrorMessage(
+        `Unable to delete Qwen conversation: ${toErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private async clearInactiveHistory(
+    workspacePaths: readonly string[],
+    refresh: () => Promise<void>,
+    sessions: readonly QwenSavedSession[],
+  ): Promise<void> {
+    const inactiveCount = sessions.filter(
+      (session) => !session.isCurrent,
+    ).length;
+    if (inactiveCount === 0 || this.history === undefined) {
+      await vscode.window.showInformationMessage(
+        "There are no inactive Qwen conversations to clear.",
+      );
+      return;
+    }
+    const confirmation = await vscode.window.showWarningMessage(
+      `Clear ${String(inactiveCount)} inactive Qwen conversation${inactiveCount === 1 ? "" : "s"}? Saved transcripts will be removed.`,
+      { modal: true },
+      "Clear",
+    );
+    if (confirmation !== "Clear") {
+      return;
+    }
+    try {
+      const result = await this.history.deleteInactive(
+        workspacePaths,
+        this.sessionId ?? this.sessions.getKnownSessionId(),
+      );
+      await refresh();
+      if (result.errors.length > 0) {
+        await vscode.window.showWarningMessage(
+          `Cleared ${String(result.removed.length)} conversation${result.removed.length === 1 ? "" : "s"}; ${String(result.errors.length)} could not be removed.`,
+        );
+      }
+    } catch (error) {
+      await vscode.window.showErrorMessage(
+        `Unable to clear Qwen chat history: ${toErrorMessage(error)}`,
+      );
+    }
   }
 
   async openModelSettings(): Promise<void> {
@@ -707,6 +916,54 @@ function findLastTimelineIndex(
     }
   }
   return -1;
+}
+
+interface HistoryPickerItem extends vscode.QuickPickItem {
+  readonly session: QwenSavedSession;
+}
+
+function toHistoryPickerItem(session: QwenSavedSession): HistoryPickerItem {
+  const branch =
+    session.gitBranch === undefined
+      ? undefined
+      : `$(git-branch) ${session.gitBranch}`;
+  const current = session.isCurrent ? " · Current" : "";
+  return {
+    label: session.title,
+    description: `${relativeTime(session.updatedAt)}${branch === undefined ? "" : ` · ${branch}`}${current}`,
+    ...(session.initialPrompt === undefined ||
+    session.initialPrompt === session.title
+      ? {}
+      : { detail: session.initialPrompt }),
+    ...(session.isCurrent
+      ? {}
+      : {
+          buttons: [
+            {
+              iconPath: new vscode.ThemeIcon("trash"),
+              tooltip: "Delete conversation",
+            },
+          ],
+        }),
+    session,
+  };
+}
+
+function relativeTime(timestamp: number, now = Date.now()): string {
+  const age = Math.max(0, now - timestamp);
+  if (age < 60_000) {
+    return "just now";
+  }
+  const minutes = Math.floor(age / 60_000);
+  if (minutes < 60) {
+    return `${String(minutes)}m ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${String(hours)}h ago`;
+  }
+  const days = Math.floor(hours / 24);
+  return `${String(days)}d ago`;
 }
 
 export { parseWebviewMessage };

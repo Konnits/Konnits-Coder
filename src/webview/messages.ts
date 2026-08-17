@@ -30,12 +30,23 @@ export interface ChatReference {
   readonly workspaceName?: string;
 }
 
+export type SlashCommandSource =
+  | "qwen"
+  | "builtin"
+  | "user"
+  | "project"
+  | "skill"
+  | "mcp"
+  | "extension"
+  | "unknown";
+
 export interface SlashCommandSuggestion {
   readonly name: string;
   readonly description?: string;
-  readonly source?: string;
+  readonly usage?: string;
   readonly aliases?: readonly string[];
-  readonly argumentHint?: string;
+  readonly source: SlashCommandSource;
+  readonly available: boolean;
 }
 
 export interface WorkspaceReferenceSuggestion extends ChatReference {

@@ -872,10 +872,10 @@ pre {
 .suggestion-item {
   width: 100%;
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
   padding: 6px 8px;
   color: var(--vscode-foreground);
   background: transparent;
@@ -895,17 +895,39 @@ pre {
   white-space: nowrap;
 }
 
-.suggestion-detail {
+.suggestion-main-row {
   min-width: 0;
-  max-width: 52%;
-  color: var(--vscode-descriptionForeground);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.suggestion-selected .suggestion-detail {
+.suggestion-source {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.suggestion-description,
+.suggestion-usage {
+  min-width: 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.suggestion-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.suggestion-selected .suggestion-source,
+.suggestion-selected .suggestion-description,
+.suggestion-selected .suggestion-usage {
   color: var(--vscode-list-activeSelectionForeground);
   opacity: 0.8;
 }
@@ -987,11 +1009,10 @@ pre {
   }
 
   .suggestion-item {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 2px;
+    gap: 3px;
   }
 
-  .suggestion-detail {
-    max-width: 100%;
+  .suggestion-source {
+    font-size: 10px;
   }
 }
