@@ -50,6 +50,9 @@ import { ContextUsageRefreshScheduler } from "./ContextUsageRefreshScheduler.js"
 export interface QwenClientConfiguration {
   readonly executablePath?: string;
   readonly debug: boolean;
+  readonly allowImageInput?: boolean;
+  /** Milliseconds without an SDK message before failing the turn. Zero disables it. */
+  readonly streamIdleTimeoutMs?: number;
 }
 
 export interface QwenClientLogger {
@@ -72,6 +75,9 @@ export type QwenSubagentResolver = (
 export type QwenRuntimeCleanupWait = () => Promise<void>;
 
 const CLI_TARGET_ENVIRONMENT_VARIABLE = "QWEN_FRONTEND_CLI_TARGET";
+export const DEFAULT_QWEN_STREAM_IDLE_TIMEOUT_MS = 120_000;
+const IMAGE_FILE_PATH =
+  /\.(?:apng|avif|bmp|gif|heic|jpeg|jpg|png|svg|tif|tiff|webp)(?:[?#].*)?$/iu;
 
 export class QwenCodeAgentClient implements AgentClient {
   private readonly listeners = new Set<(event: AgentEvent) => void>();
@@ -366,8 +372,19 @@ export class QwenCodeAgentClient implements AgentClient {
       permissionMode: "default",
       includePartialMessages: true,
       abortController,
-      canUseTool: async (toolName, input, { signal }) =>
-        this.requestToolPermission(toolName, input, signal),
+      canUseTool: async (toolName, input, { signal }) => {
+        if (
+          !configuration.allowImageInput &&
+          isImageReadTool(toolName, input)
+        ) {
+          return {
+            behavior: "deny",
+            message:
+              "Image input is disabled because the configured model may not support it. Continue with text-based files, or enable qwenFrontend.qwen.allowImageInput after selecting a vision-capable model.",
+          };
+        }
+        return this.requestToolPermission(toolName, input, signal);
+      },
       stderr: (message) => {
         const safeMessage = diagnostics.add(message);
         if (safeMessage !== undefined) {
@@ -438,7 +455,17 @@ export class QwenCodeAgentClient implements AgentClient {
 
     let iteratorCompleted = false;
     try {
-      for await (const message of activeQuery) {
+      const iterator = activeQuery[Symbol.asyncIterator]();
+      for (;;) {
+        const next = await nextWithInactivityTimeout(
+          iterator.next(),
+          this.configuration().streamIdleTimeoutMs ??
+            DEFAULT_QWEN_STREAM_IDLE_TIMEOUT_MS,
+        );
+        if (next.done) {
+          break;
+        }
+        const message = next.value;
         if (this.configuration().debug) {
           this.logger.debug(describeSdkMessageForDebug(message));
         }
@@ -688,6 +715,15 @@ interface QwenExecutionResult {
   readonly turnUsage?: TurnTokenUsage;
 }
 
+class QwenStreamInactivityError extends Error {
+  constructor(timeoutMs: number) {
+    super(
+      `Qwen Code stopped receiving messages for ${String(timeoutMs)} ms. The model provider may have ended the stream without a final result.`,
+    );
+    this.name = "QwenStreamInactivityError";
+  }
+}
+
 interface ControlledPrompt {
   readonly messages: AsyncIterable<SDKUserMessage>;
   finish(): void;
@@ -715,6 +751,31 @@ function createControlledPrompt(
   };
 }
 
+function nextWithInactivityTimeout<T>(
+  next: Promise<IteratorResult<T>>,
+  timeoutMs: number,
+): Promise<IteratorResult<T>> {
+  if (timeoutMs <= 0) {
+    return next;
+  }
+  return new Promise<IteratorResult<T>>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new QwenStreamInactivityError(timeoutMs)),
+      timeoutMs,
+    );
+    void next.then(
+      (result) => {
+        clearTimeout(timeout);
+        resolve(result);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(toError(error));
+      },
+    );
+  });
+}
+
 async function* createIdlePrompt(): AsyncIterable<SDKUserMessage> {
   yield* [];
   await new Promise<void>(() => undefined);
@@ -734,6 +795,30 @@ function isExtensionStoreBusy(
     diagnostics.containsExtensionStoreBusy() ||
     /Extension store is busy at/iu.test(toErrorMessage(error))
   );
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(toErrorMessage(error));
+}
+
+function isImageReadTool(toolName: string, input: ToolInput): boolean {
+  return (
+    /(?:^|[_-])(?:read|view)(?:[_-]|$)/iu.test(toolName) &&
+    containsImagePath(input)
+  );
+}
+
+function containsImagePath(value: unknown): boolean {
+  if (typeof value === "string") {
+    return IMAGE_FILE_PATH.test(value.trim());
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => containsImagePath(item));
+  }
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return Object.values(value).some((item) => containsImagePath(item));
 }
 
 function readAssistantUsage(message: SDKAssistantMessage): Usage | undefined {

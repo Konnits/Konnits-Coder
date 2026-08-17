@@ -41,7 +41,7 @@ export class QwenDiagnosticCapture {
       .filter(
         (line) =>
           line.length > 0 &&
-          /error|failed|missing|not found|no saved session|extension store is busy|unauthori[sz]ed|forbidden|ECONN|fetch/iu.test(
+          /error|failed|missing|not found|no saved session|extension store is busy|unauthori[sz]ed|forbidden|ECONN|fetch|(?:messages?|inputs?) contain images?|does not support image inputs?|image input is not supported/iu.test(
             line,
           ),
       );
@@ -55,6 +55,13 @@ export function actionableQwenError(
   diagnostic?: string,
 ): string {
   const combined = `${message}\n${diagnostic ?? ""}`;
+  if (
+    /(?:messages?|inputs?) contain images?|does not support image inputs?|image input is not supported/iu.test(
+      combined,
+    )
+  ) {
+    return "The configured model does not support image input, but this Qwen session contains an image. Start a new session and request a text-only analysis, or select a vision-capable model. See the Qwen Frontend Output for diagnostic details.";
+  }
   if (
     /ENOENT|executable (?:file )?(?:is )?(?:unavailable|not found)|Bundled qwen CLI not found|spawn .*ENOENT/iu.test(
       combined,

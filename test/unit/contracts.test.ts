@@ -9,6 +9,25 @@ describe("configuration parsing", () => {
       executablePath: "C:/qwen/cli.js",
       debug: true,
     });
+    expect(parseConfigurationValues("", false, true)).toEqual({
+      debug: false,
+      allowImageInput: true,
+    });
+    expect(parseConfigurationValues("", false, false, 180_000)).toEqual({
+      debug: false,
+      streamIdleTimeoutMs: 180_000,
+    });
+    expect(parseConfigurationValues("", false, false, 7_200_000)).toEqual({
+      debug: false,
+      streamIdleTimeoutMs: 7_200_000,
+    });
+    expect(parseConfigurationValues("", false, false, 0)).toEqual({
+      debug: false,
+      streamIdleTimeoutMs: 0,
+    });
+    expect(parseConfigurationValues("", false, false, 1)).toEqual({
+      debug: false,
+    });
   });
 });
 

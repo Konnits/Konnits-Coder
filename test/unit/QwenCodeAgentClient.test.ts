@@ -68,6 +68,33 @@ describe("QwenCodeAgentClient", () => {
     expect(requests[0]?.options?.excludeTools).toBeUndefined();
   });
 
+  it("denies image reads by default before Qwen can add them to the model input", async () => {
+    const options: QueryOptions[] = [];
+    const client = createClient(
+      vi.fn(((request: { readonly options?: QueryOptions }) => {
+        options.push(request.options ?? {});
+        return successfulQuery();
+      }) as QwenQueryFactory),
+    );
+
+    await client.run(runRequest());
+
+    const candidate = options[0]?.canUseTool as unknown;
+    if (!isToolPermissionCallback(candidate)) {
+      throw new Error("Expected a Qwen tool permission callback.");
+    }
+    const decision = await candidate(
+      "read_file",
+      { file_path: "outputs/hard_mixed_multivariate.png" },
+      { signal: new AbortController().signal },
+    );
+    expect(isDeniedToolPermissionDecision(decision)).toBe(true);
+    if (!isDeniedToolPermissionDecision(decision)) {
+      throw new Error("Expected a denied tool permission decision.");
+    }
+    expect(decision.message).toContain("Image input is disabled");
+  });
+
   it("reattaches a saved session without emitting a user prompt", async () => {
     const requests: Parameters<QwenQueryFactory>[0][] = [];
     const close = vi.fn(async () => undefined);
@@ -288,6 +315,53 @@ describe("QwenCodeAgentClient", () => {
     expect(events).not.toContain("agent.failed");
   });
 
+  it("fails and closes a turn when Qwen stops yielding messages", async () => {
+    const close = vi.fn(async () => undefined);
+    const stalledQuery = {
+      [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
+        return {
+          next: () => new Promise<IteratorResult<SDKMessage>>(() => undefined),
+        };
+      },
+      close,
+      isClosed: () => false,
+    } as unknown as Query;
+    const client = createClient(
+      vi.fn((() => stalledQuery) as QwenQueryFactory),
+      { streamIdleTimeoutMs: 10 },
+    );
+    const events: AgentEvent[] = [];
+    client.onEvent((event) => events.push(event));
+
+    await client.run(runRequest());
+
+    const failure = events.find((event) => event.type === "agent.failed");
+    expect(failure?.type === "agent.failed" && failure.message).toContain(
+      "stopped receiving messages for 10 ms",
+    );
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: "agent.completed" }),
+    );
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a slow turn alive when the stream idle timeout is disabled", async () => {
+    const query = fakeQuery(async function* () {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      yield resultMessage("done");
+    });
+    const client = createClient(vi.fn((() => query) as QwenQueryFactory), {
+      streamIdleTimeoutMs: 0,
+    });
+    const events: string[] = [];
+    client.onEvent((event) => events.push(event.type));
+
+    await client.run(runRequest());
+
+    expect(events).toContain("agent.completed");
+    expect(events).not.toContain("agent.failed");
+  });
+
   it("interrupts and reports cancellation for an active query", async () => {
     let query: Query | undefined;
     const interrupt = vi.fn(async () => undefined);
@@ -479,11 +553,15 @@ describe("QwenCodeAgentClient", () => {
 
 function createClient(
   queryFactory: QwenQueryFactory,
-  configuration: { readonly executablePath?: string } = {},
+  configuration: {
+    readonly executablePath?: string;
+    readonly allowImageInput?: boolean;
+    readonly streamIdleTimeoutMs?: number;
+  } = {},
   subagentResolver?: QwenSubagentResolver,
 ): QwenCodeAgentClient {
   return new QwenCodeAgentClient(
-    () => ({ ...configuration, debug: false }),
+    () => ({ ...configuration, debug: false, allowImageInput: false }),
     new PermissionManager(),
     {
       beforeEdit: vi.fn(async () => undefined),
@@ -733,6 +811,31 @@ function runRequest() {
     sessionId: "session",
     resume: false,
   };
+}
+
+type ToolPermissionCallback = (
+  toolName: string,
+  input: { readonly file_path: string },
+  context: { readonly signal: AbortSignal },
+) => Promise<unknown>;
+
+function isToolPermissionCallback(
+  value: unknown,
+): value is ToolPermissionCallback {
+  return typeof value === "function";
+}
+
+function isDeniedToolPermissionDecision(
+  value: unknown,
+): value is { readonly behavior: "deny"; readonly message: string } {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const decision = value as {
+    readonly behavior?: unknown;
+    readonly message?: unknown;
+  };
+  return decision.behavior === "deny" && typeof decision.message === "string";
 }
 
 function toolLoopQuery(): Query {

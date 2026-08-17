@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
-import type { QwenClientConfiguration } from "../qwen/QwenCodeAgentClient.js";
+import {
+  DEFAULT_QWEN_STREAM_IDLE_TIMEOUT_MS,
+  type QwenClientConfiguration,
+} from "../qwen/QwenCodeAgentClient.js";
 import { parseConfigurationValues } from "./ConfigurationValues.js";
 
 export class Configuration {
@@ -8,6 +11,11 @@ export class Configuration {
     return parseConfigurationValues(
       configuration.get<string>("qwen.executablePath", ""),
       configuration.get<boolean>("debug", false),
+      configuration.get<boolean>("qwen.allowImageInput", false),
+      configuration.get<number>(
+        "qwen.streamIdleTimeoutMs",
+        DEFAULT_QWEN_STREAM_IDLE_TIMEOUT_MS,
+      ),
     );
   }
 }

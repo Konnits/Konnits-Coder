@@ -128,6 +128,19 @@
           "scope": "machine-overridable",
           "description": "Optional Qwen Code executable or CLI bundle path. Leave empty to use the CLI bundled with @qwen-code/sdk."
         },
+        "qwenFrontend.qwen.allowImageInput": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "Allow Qwen tools to open image files. Enable only when the selected model supports image input."
+        },
+        "qwenFrontend.qwen.streamIdleTimeoutMs": {
+          "type": "number",
+          "default": 600000,
+          "minimum": 0,
+          "scope": "window",
+          "description": "Maximum time without a Qwen SDK message before treating the turn as failed. Set to 0 to disable the timeout."
+        },
         "qwenFrontend.debug": {
           "type": "boolean",
           "default": false,

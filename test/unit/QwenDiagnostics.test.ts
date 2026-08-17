@@ -33,9 +33,28 @@ describe("QwenDiagnosticCapture", () => {
     expect(capture.containsExtensionStoreBusy()).toBe(true);
     expect(capture.summary()).toContain("Extension store is busy");
   });
+
+  it("retains image capability diagnostics from the Qwen runtime", () => {
+    const capture = new QwenDiagnosticCapture();
+    capture.add(
+      "400 The provided messages contain images, but qwen3.6-35b-a3b does not support image inputs.",
+    );
+
+    expect(capture.summary()).toContain("does not support image inputs");
+  });
 });
 
 describe("actionableQwenError", () => {
+  it("explains how to recover when a text-only model rejects an image", () => {
+    expect(
+      actionableQwenError(
+        "400 The provided messages contain images, but qwen3.6-35b-a3b does not support image inputs.",
+      ),
+    ).toBe(
+      "The configured model does not support image input, but this Qwen session contains an image. Start a new session and request a text-only analysis, or select a vision-capable model. See the Qwen Frontend Output for diagnostic details.",
+    );
+  });
+
   it("maps authentication and generic CLI exits to concise guidance", () => {
     expect(
       actionableQwenError("CLI process exited with code 1", "401 Unauthorized"),
