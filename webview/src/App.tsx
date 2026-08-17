@@ -80,6 +80,9 @@ export function App(): React.JSX.Element {
           if (item.type === "turnUsage") {
             return `${item.type}:${item.id}:${String(item.usage.totalTokens)}`;
           }
+          if (item.type === "commandResult") {
+            return `${item.type}:${item.id}:${item.status}:${String(item.markdown.length)}`;
+          }
           return `${item.type}:${item.id}:${String(item.message.length)}`;
         })
         .join("|"),
@@ -129,7 +132,7 @@ export function App(): React.JSX.Element {
     }
     const query = suggestionMode.query.toLowerCase();
     return commands.filter((command) =>
-      [command.name, ...(command.aliases ?? [])].some(
+      [command.command, ...(command.aliases ?? [])].some(
         (name) =>
           name.toLowerCase().includes(query) ||
           name.toLowerCase().includes(`/${query}`),
@@ -209,7 +212,7 @@ export function App(): React.JSX.Element {
     if (suggestionMode.kind !== "command") {
       return;
     }
-    const replacement = command.name;
+    const replacement = command.command;
     updatePrompt(
       replaceComposerSuggestion(prompt, suggestionMode, replacement),
       suggestionMode.start + replacement.length,
@@ -598,6 +601,18 @@ function StandaloneEntry({
         <article className="error-message" role="alert">
           <strong>Error</strong>
           <p>{item.message}</p>
+        </article>
+      );
+    case "commandResult":
+      return (
+        <article
+          className={`command-result command-result-${item.status}`}
+          role={item.status === "error" ? "alert" : undefined}
+        >
+          <div className="eyebrow">Konnits</div>
+          <code className="command-result-invocation">{item.command}</code>
+          <h3>{item.title}</h3>
+          <MarkdownMessage source={item.markdown} onOpenLink={onOpenLink} />
         </article>
       );
     case "thinking":

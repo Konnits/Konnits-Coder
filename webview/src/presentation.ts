@@ -84,6 +84,11 @@ export function buildConversationView(
       entries.push(currentTurn);
       continue;
     }
+    if (item.type === "commandResult") {
+      currentTurn = undefined;
+      entries.push({ type: "standalone", id: item.id, item });
+      continue;
+    }
     if (currentTurn === undefined) {
       entries.push({ type: "standalone", id: item.id, item });
       continue;

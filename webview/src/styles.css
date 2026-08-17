@@ -232,6 +232,27 @@ button.danger {
   border-left: 3px solid var(--vscode-testing-iconFailed);
 }
 
+.command-result {
+  margin: 12px 0;
+  padding: 10px;
+  border-left: 3px solid var(--vscode-testing-iconPassed);
+  border-radius: 3px;
+  background: var(--vscode-editorWidget-background);
+}
+
+.command-result-error {
+  border-left-color: var(--vscode-testing-iconFailed);
+}
+
+.command-result h3 {
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+.command-result-invocation {
+  color: var(--vscode-textLink-foreground);
+}
+
 .timeline {
   flex: 1;
   padding: 4px 12px 14px;
@@ -886,6 +907,10 @@ pre {
 .suggestion-selected {
   background: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
+}
+
+.suggestion-unavailable {
+  opacity: 0.72;
 }
 
 .suggestion-main {

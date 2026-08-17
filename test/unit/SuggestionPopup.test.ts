@@ -12,11 +12,15 @@ describe("SuggestionPopup", () => {
         kind: "command",
         commands: [
           {
-            name: "/tasks",
+            id: "qwen:tasks",
+            command: "/tasks",
+            title: "/tasks",
             description,
             usage: "/tasks",
-            aliases: ["jobs"],
+            aliases: ["/jobs"],
             source: "qwen",
+            origin: "qwen",
+            executionMode: "qwen-sdk",
             available: true,
           },
         ],

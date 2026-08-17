@@ -129,6 +129,28 @@ describe("processing presentation", () => {
     expect(turn.finalResponse?.text).toBe("# Final answer");
     expect(turn.finalResponse?.text).not.toContain("README.md");
   });
+
+  it("renders native command results as standalone Konnits entries", () => {
+    const timeline: TimelineItem[] = [
+      { type: "user", id: "user-1", text: "Earlier prompt" },
+      { type: "finalResponse", id: "final-1", text: "Earlier answer" },
+      {
+        type: "commandResult",
+        id: "command-1",
+        command: "/help",
+        title: "Available commands",
+        markdown: "Local help",
+        status: "success",
+      },
+    ];
+
+    const view = buildConversationView(timeline, "completed");
+    expect(view).toHaveLength(2);
+    expect(view[1]).toMatchObject({
+      type: "standalone",
+      item: { type: "commandResult", command: "/help" },
+    });
+  });
 });
 
 function tool(id: string, detail = "README.md"): ToolTimelineItem {

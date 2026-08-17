@@ -25,20 +25,19 @@ export function SuggestionPopup({
   return (
     <div className="suggestion-popup" role="listbox" aria-label="Suggestions">
       {kind === "command" && commands.length === 0 ? (
-        <div className="suggestion-empty">No Qwen commands available</div>
+        <div className="suggestion-empty">No commands available</div>
       ) : kind === "reference" && references.length === 0 ? (
         <div className="suggestion-empty">No workspace files match</div>
       ) : kind === "command" ? (
         commands.map((command, index) => (
           <SuggestionItem
-            key={command.name}
+            key={command.id}
             index={index}
             selected={index === highlightedIndex}
-            main={command.name}
-            source={formatCommandSource(command.source)}
-            {...(command.description === undefined
-              ? {}
-              : { description: command.description })}
+            main={command.command}
+            source={formatCommandSource(command)}
+            description={command.description}
+            unavailable={!command.available}
             {...(command.usage === undefined ? {} : { usage: command.usage })}
             {...(command.aliases === undefined
               ? {}
@@ -72,6 +71,7 @@ interface SuggestionItemProps {
   readonly description?: string;
   readonly usage?: string;
   readonly aliases?: readonly string[];
+  readonly unavailable?: boolean;
   readonly onHighlight: (index: number) => void;
   readonly onSelect: () => void;
 }
@@ -84,12 +84,13 @@ function SuggestionItem({
   description,
   usage,
   aliases,
+  unavailable = false,
   onHighlight,
   onSelect,
 }: SuggestionItemProps): React.JSX.Element {
   return (
     <button
-      className={`suggestion-item${selected ? " suggestion-selected" : ""}`}
+      className={`suggestion-item${selected ? " suggestion-selected" : ""}${unavailable ? " suggestion-unavailable" : ""}`}
       role="option"
       aria-selected={selected}
       onMouseDown={(event) => event.preventDefault()}
@@ -107,16 +108,16 @@ function SuggestionItem({
         <span className="suggestion-usage">Usage: {usage}</span>
       )}
       {aliases !== undefined && aliases.length > 0 && (
-        <span className="suggestion-usage">
-          Aliases: {aliases.map((alias) => `/${alias}`).join(", ")}
-        </span>
+        <span className="suggestion-usage">Aliases: {aliases.join(", ")}</span>
       )}
     </button>
   );
 }
 
-function formatCommandSource(source: SlashCommandSuggestion["source"]): string {
-  switch (source) {
+function formatCommandSource(command: SlashCommandSuggestion): string {
+  if (!command.available) return "Unavailable";
+  if (command.source === "konnits") return "Konnits";
+  switch (command.origin) {
     case "builtin":
       return "Built-in";
     case "project":
@@ -130,8 +131,11 @@ function formatCommandSource(source: SlashCommandSuggestion["source"]): string {
     case "extension":
       return "Extension";
     case "qwen":
-      return "Qwen";
+    case undefined:
+      return "Qwen SDK";
     case "unknown":
       return "Unknown";
+    default:
+      return "Qwen SDK";
   }
 }
