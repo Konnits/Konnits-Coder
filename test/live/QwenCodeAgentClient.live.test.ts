@@ -196,7 +196,11 @@ describe("QwenCodeAgentClient live integration", () => {
         true,
       );
       expect(
-        info.filter((message) => message.includes("retrying once")),
+        info.filter((message) =>
+          message.includes(
+            "The persisted Qwen session does not exist; retrying once as a new session.",
+          ),
+        ),
       ).toHaveLength(1);
       if (process.env.QWEN_LIVE_REPORT === "1") {
         console.info(

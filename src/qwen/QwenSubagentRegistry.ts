@@ -3,7 +3,10 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { DaemonClient, type SubagentConfig } from "@qwen-code/sdk";
-import type { QwenRuntimeDiagnostics } from "./QwenRuntimeDiagnostics.js";
+import {
+  inspectQwenRuntime,
+  type QwenRuntimeDiagnostics,
+} from "./QwenRuntimeDiagnostics.js";
 
 const DAEMON_START_TIMEOUT_MS = 15_000;
 const DAEMON_PORT_PATTERN = /listening on http:\/\/127\.0\.0\.1:(\d+)/u;
@@ -36,6 +39,59 @@ export interface QwenSubagentResolverOptions {
   readonly platform?: NodeJS.Platform;
   readonly electronVersion?: string;
   readonly startTimeoutMs?: number;
+}
+
+export interface QwenSubagentCatalogConfiguration {
+  readonly executablePath?: string;
+}
+
+/**
+ * Shared, cached view of the daemon agent registry. Both QueryOptions.agents
+ * and native command UI consume this object so they cannot drift apart.
+ */
+export class QwenSubagentCatalog {
+  private readonly cache = new Map<string, Promise<QwenSubagentResolution>>();
+
+  constructor(
+    private readonly configuration: () => QwenSubagentCatalogConfiguration,
+    private readonly runtimeResolver: (
+      configuredPath?: string,
+    ) => Promise<QwenRuntimeDiagnostics> = inspectQwenRuntime,
+    private readonly resolver: typeof resolveQwenSubagents = resolveQwenSubagents,
+  ) {}
+
+  async list(workspacePath: string): Promise<QwenSubagentResolution> {
+    const runtime = await this.runtimeResolver(
+      this.configuration().executablePath,
+    );
+    return this.resolve(runtime, workspacePath);
+  }
+
+  resolve(
+    runtime: QwenRuntimeDiagnostics,
+    workspacePath: string,
+  ): Promise<QwenSubagentResolution> {
+    const key = `${runtime.cliExecutable}\u0000${resolve(workspacePath)}`;
+    const cached = this.cache.get(key);
+    if (cached !== undefined) return cached;
+    const pending = this.resolver(runtime, workspacePath)
+      .then((resolution) => {
+        if (resolution.diagnostics.error !== undefined) {
+          this.cache.delete(key);
+        }
+        return resolution;
+      })
+      .catch((error: unknown) => {
+        this.cache.delete(key);
+        throw error;
+      });
+    this.cache.set(key, pending);
+    return pending;
+  }
+
+  refresh(): void {
+    this.cache.clear();
+  }
 }
 
 export async function resolveQwenSubagents(
@@ -216,7 +272,7 @@ async function startQwenDaemon(
   workspacePath: string,
   options: QwenSubagentResolverOptions,
 ): Promise<DaemonProcess> {
-  const launch = resolveDaemonLaunch(executable, options);
+  const launch = resolveQwenDaemonLaunch(executable, options);
   const daemonArgs = [
     "serve",
     "--port",
@@ -329,7 +385,7 @@ async function closeChild(child: ReturnType<typeof spawn>): Promise<void> {
   ]);
 }
 
-function resolveDaemonLaunch(
+export function resolveQwenDaemonLaunch(
   executable: string,
   options: QwenSubagentResolverOptions,
 ): DaemonLaunch {
@@ -345,10 +401,14 @@ function resolveDaemonLaunch(
         "qwen-cli-launcher.mjs",
       );
     return {
-      command: launcherPath,
-      args: [],
+      // Windows cannot spawn a .mjs file directly (spawn EFTYPE). Run the
+      // bootstrap through the Electron binary's supported Node mode; the
+      // bootstrap then launches the selected Qwen CLI with external Node.
+      command: process.execPath,
+      args: [launcherPath],
       env: {
         ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
         QWEN_FRONTEND_CLI_TARGET: executable,
       },
     };

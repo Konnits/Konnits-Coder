@@ -18,6 +18,7 @@ import type {
   ModelSelectorViewState,
 } from "../models/ModelTypes.js";
 import type { PermissionManager } from "../permissions/PermissionManager.js";
+import type { KonnitsCommandRouter } from "../commands/KonnitsCommandRouter.js";
 import type { QwenSessionManager } from "../qwen/QwenSessionManager.js";
 import type {
   QwenSavedSession,
@@ -60,6 +61,7 @@ export class ChatController implements vscode.Disposable {
     private readonly tokenCounter: TokenCounter = new EstimatedTokenCounter(),
     private readonly models?: ModelManagement,
     private readonly history?: QwenSessionHistoryService,
+    private readonly commands?: KonnitsCommandRouter,
   ) {
     this.disposables.push(
       this.agent.onEvent((event) => this.handleAgentEvent(event)),
@@ -483,6 +485,24 @@ export class ChatController implements vscode.Disposable {
       throw new Error(
         "Open a workspace folder before sending a coding request.",
       );
+    }
+    if (this.commands !== undefined) {
+      const route = await this.commands.route(prompt, {
+        workspacePath: folder.uri.fsPath,
+        workspacePaths: folders.map((workspace) => workspace.uri.fsPath),
+      });
+      if (route.type === "local") {
+        this.timeline.push({
+          type: "commandResult",
+          id: randomUUID(),
+          command: route.result.command,
+          title: route.result.title,
+          markdown: route.result.markdown,
+          status: route.result.status,
+        });
+        this.emitChange();
+        return;
+      }
     }
     if (!this.connected && !(await this.connect())) {
       return;

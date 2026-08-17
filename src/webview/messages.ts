@@ -7,6 +7,7 @@ import type {
 import type { FileChangeStatus } from "../changes/ProposedFileChange.js";
 import type { PermissionRisk } from "../permissions/toolRisk.js";
 import type { ModelSelectorViewState } from "../models/ModelTypes.js";
+import type { SlashCommandDescriptor } from "../commands/SlashCommand.js";
 
 export type ExecutionStatus =
   | "idle"
@@ -30,24 +31,7 @@ export interface ChatReference {
   readonly workspaceName?: string;
 }
 
-export type SlashCommandSource =
-  | "qwen"
-  | "builtin"
-  | "user"
-  | "project"
-  | "skill"
-  | "mcp"
-  | "extension"
-  | "unknown";
-
-export interface SlashCommandSuggestion {
-  readonly name: string;
-  readonly description?: string;
-  readonly usage?: string;
-  readonly aliases?: readonly string[];
-  readonly source: SlashCommandSource;
-  readonly available: boolean;
-}
+export type SlashCommandSuggestion = SlashCommandDescriptor;
 
 export interface WorkspaceReferenceSuggestion extends ChatReference {
   readonly score: number;
@@ -114,6 +98,15 @@ export interface ErrorTimelineItem {
   readonly message: string;
 }
 
+export interface CommandResultTimelineItem {
+  readonly type: "commandResult";
+  readonly id: string;
+  readonly command: string;
+  readonly title: string;
+  readonly markdown: string;
+  readonly status: "success" | "error";
+}
+
 export type TimelineItem =
   | UserTimelineItem
   | AssistantTimelineItem
@@ -121,7 +114,8 @@ export type TimelineItem =
   | FinalResponseTimelineItem
   | ToolTimelineItem
   | TurnUsageTimelineItem
-  | ErrorTimelineItem;
+  | ErrorTimelineItem
+  | CommandResultTimelineItem;
 
 export interface ChangeViewModel {
   readonly id: string;

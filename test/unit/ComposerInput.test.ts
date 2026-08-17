@@ -44,14 +44,16 @@ describe("composer input intent", () => {
     ).toBe("Please inspect  now");
   });
 
-  it("accepts commands without replacing surrounding prompt text", () => {
-    const mode = parseComposerSuggestionMode("Read /con please", 9);
+  it("only treats slash commands in the leading command position", () => {
+    expect(parseComposerSuggestionMode("Read /con please", 9)).toEqual({
+      kind: "none",
+    });
+    const mode = parseComposerSuggestionMode("  /con", 6);
     expect(mode).toMatchObject({ kind: "command", query: "con" });
-    if (mode.kind !== "command") {
-      throw new Error("Expected a command suggestion mode.");
+    if (mode.kind === "command") {
+      expect(replaceComposerSuggestion("  /con", mode, "/context")).toBe(
+        "  /context",
+      );
     }
-    expect(
-      replaceComposerSuggestion("Read /con please", mode, "/context"),
-    ).toBe("Read /context please");
   });
 });

@@ -35,6 +35,9 @@ export function parseComposerSuggestionMode(
     return { kind: "none" };
   }
   const query = token.slice(1);
+  if (trigger === "/" && text.slice(0, start).trim().length > 0) {
+    return { kind: "none" };
+  }
   return trigger === "/"
     ? { kind: "command", query, start, end }
     : { kind: "reference", query, start, end };

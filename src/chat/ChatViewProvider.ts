@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import type { ChatController } from "./ChatController.js";
-import type { QwenCommandProvider } from "../qwen/QwenCommandProvider.js";
+import type { SlashCommandRegistry } from "../commands/SlashCommandRegistry.js";
 import type {
   ExtensionToWebviewMessage,
   SlashCommandsMessage,
@@ -20,7 +20,7 @@ export class ChatViewProvider
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly controller: ChatController,
-    private readonly commands: QwenCommandProvider,
+    private readonly commands: SlashCommandRegistry,
     private readonly references: WorkspaceReferenceService,
   ) {
     this.stateSubscription = controller.onDidChange(() => {
@@ -62,6 +62,10 @@ export class ChatViewProvider
     this.view = undefined;
   }
 
+  refreshCommands(): void {
+    void this.postSlashCommands();
+  }
+
   private async postState(): Promise<void> {
     if (this.view === undefined) {
       return;
@@ -75,13 +79,16 @@ export class ChatViewProvider
 
   private async postSlashCommands(): Promise<void> {
     const folders = vscode.workspace.workspaceFolders;
-    const message: SlashCommandsMessage =
-      folders === undefined || folders.length === 0
-        ? { type: "slashCommands", commands: [] }
-        : {
-            type: "slashCommands",
-            commands: await discoverCommands(this.commands, folders),
-          };
+    const workspacePaths = folders?.map((folder) => folder.uri.fsPath) ?? [];
+    const message: SlashCommandsMessage = {
+      type: "slashCommands",
+      commands: await this.commands.list({
+        ...(workspacePaths[0] === undefined
+          ? {}
+          : { workspacePath: workspacePaths[0] }),
+        workspacePaths,
+      }),
+    };
     await this.postMessage(message);
   }
 
@@ -136,18 +143,4 @@ export class ChatViewProvider
 </body>
 </html>`;
   }
-}
-
-async function discoverCommands(
-  provider: QwenCommandProvider,
-  folders: readonly vscode.WorkspaceFolder[],
-): Promise<Awaited<ReturnType<QwenCommandProvider["discover"]>>> {
-  const firstFolder = folders[0];
-  if (firstFolder === undefined) {
-    return [];
-  }
-  return provider.discover(
-    firstFolder.uri.fsPath,
-    folders.map((folder) => folder.uri.fsPath),
-  );
 }

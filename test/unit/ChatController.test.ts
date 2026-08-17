@@ -14,6 +14,9 @@ import type { Logger } from "../../src/logging/Logger.js";
 import type { ModelManagement } from "../../src/models/ModelTypes.js";
 import type { PermissionManager } from "../../src/permissions/PermissionManager.js";
 import type { QwenSessionManager } from "../../src/qwen/QwenSessionManager.js";
+import { KonnitsCommandRouter } from "../../src/commands/KonnitsCommandRouter.js";
+import { registerKonnitsCommands } from "../../src/commands/KonnitsCommands.js";
+import { SlashCommandRegistry } from "../../src/commands/SlashCommandRegistry.js";
 import type {
   QwenSavedSession,
   QwenSessionHistoryService,
@@ -416,6 +419,79 @@ describe("ChatController terminal states", () => {
     );
   });
 
+  it("routes native, unavailable, and unknown commands locally before any Qwen turn", async () => {
+    const registry = new SlashCommandRegistry({
+      discover: vi.fn(async () => [
+        {
+          id: "qwen:status",
+          command: "/status",
+          title: "/status",
+          description: "Runtime status",
+          source: "qwen" as const,
+          origin: "qwen" as const,
+          executionMode: "qwen-sdk" as const,
+          available: true,
+        },
+      ]),
+      refresh: vi.fn(),
+    });
+    registerKonnitsCommands(registry, {
+      list: vi.fn(async () => ({
+        agents: [
+          {
+            name: "Explore",
+            description: "Fast codebase exploration",
+            systemPrompt: "Explore",
+            level: "session" as const,
+          },
+        ],
+        diagnostics: {
+          workspacePath: "C:\\workspace",
+          childWorkingDirectory: "C:\\workspace",
+          childUserProfile: "profile",
+          childHome: "home",
+          userAgentDirectory: "agents",
+          projectAgentDirectory: "project-agents",
+          userAgentsDiscovered: [],
+          projectAgentsDiscovered: [],
+          builtInAgents: [],
+          agentToolAvailable: "unavailable" as const,
+          agentRuntimeAvailable: "yes" as const,
+          modelVisibleAgentNames: "unavailable" as const,
+          runtimeAgentNames: ["Explore"],
+        },
+      })),
+    });
+    const { controller, agent } = await createController(
+      undefined,
+      undefined,
+      undefined,
+      new KonnitsCommandRouter(registry),
+    );
+
+    for (const prompt of ["/help", "/agents", "/editor", "/noexiste"]) {
+      const previousLength = controller.getState().timeline.length;
+      controller.handleMessage({ type: "sendPrompt", prompt });
+      await vi.waitFor(() =>
+        expect(controller.getState().timeline.length).toBe(previousLength + 1),
+      );
+      expect(controller.getState().timeline.at(-1)).toMatchObject({
+        type: "commandResult",
+      });
+    }
+    expect(agent.lastRequest).toBeUndefined();
+    expect(controller.getState().timeline).toContainEqual(
+      expect.objectContaining({
+        type: "commandResult",
+        command: "/agents",
+        markdown: expect.stringContaining("Explore") as string,
+      }),
+    );
+
+    controller.handleMessage({ type: "sendPrompt", prompt: "/status" });
+    await vi.waitFor(() => expect(agent.lastRequest?.prompt).toBe("/status"));
+  });
+
   it("refreshes the secret-free model summary when the webview becomes ready", async () => {
     const models = fakeModelManagement({ modelChanged: false });
     const { controller } = await createController(undefined, models);
@@ -625,6 +701,7 @@ async function createController(
   tokenCounter?: TokenCounter,
   models?: ModelManagement,
   history?: QwenSessionHistoryService,
+  commands?: KonnitsCommandRouter,
 ) {
   const { ChatController } = await import("../../src/chat/ChatController.js");
   const agent = new FakeAgentClient();
@@ -663,6 +740,7 @@ async function createController(
     tokenCounter,
     models,
     history,
+    commands,
   );
   return {
     controller,

@@ -9,155 +9,106 @@ import {
 } from "../../src/qwen/QwenCommandProvider.js";
 
 describe("Qwen command discovery", () => {
-  it("normalizes runtime commands, aliases, descriptions, and custom precedence", async () => {
-    const root = await mkdtemp(join(tmpdir(), "konnits-command-test-"));
-    const qwenHome = join(root, "home");
-    const workspace = join(root, "workspace");
-    const previousQwenHome = process.env.QWEN_HOME;
-    process.env.QWEN_HOME = qwenHome;
+  it("normalizes runtime metadata and gives project command metadata precedence", async () => {
+    const fixture = await createFixture("metadata");
     try {
-      await mkdir(join(qwenHome, "commands", "git"), { recursive: true });
-      await mkdir(join(workspace, ".qwen", "commands", "git"), {
+      await mkdir(join(fixture.qwenHome, "commands", "git"), {
+        recursive: true,
+      });
+      await mkdir(join(fixture.workspace, ".qwen", "commands", "git"), {
         recursive: true,
       });
       await writeFile(
-        join(qwenHome, "commands", "git", "commit.md"),
-        "---\ndescription: User commit helper\n---\nPrompt",
+        join(fixture.qwenHome, "commands", "git", "commit.md"),
+        "---\ndescription: User helper\n---\nPrompt",
       );
       await writeFile(
-        join(workspace, ".qwen", "commands", "git", "commit.md"),
-        "---\ndescription: Project commit helper\n---\nPrompt",
+        join(fixture.workspace, ".qwen", "commands", "git", "commit.md"),
+        "---\ndescription: Project helper\n---\nPrompt",
       );
-      await writeFile(
-        join(qwenHome, "commands", "personal.md"),
-        "---\ndescription: Personal helper\n---\nPrompt",
-      );
-
-      const query = fakeQuery({
+      const activeQuery = fakeQuery({
         commands: [
-          "model",
-          { name: "context", description: "Runtime context" },
+          {
+            name: "context",
+            description: "Runtime context",
+            argumentHint: "[detail]",
+          },
           { name: "git:commit", _meta: { altNames: ["commit"] } },
-          "personal",
+          "future-command",
         ],
       });
       const queryFactory = vi.fn(
-        () => query,
+        () => activeQuery,
       ) as unknown as QwenCommandQueryFactory;
-      const provider = new QwenCommandProvider(
-        () => ({ debug: false }),
-        { debug: vi.fn(), error: vi.fn() },
-        queryFactory,
-        async () => ({}) as never,
-      );
+      const provider = providerFor(queryFactory);
 
-      const commands = await provider.discover(workspace);
-
-      expect(commands).toEqual([
-        {
-          name: "/context",
+      await expect(provider.discover(fixture.workspace)).resolves.toEqual([
+        expect.objectContaining({
+          id: "qwen:context",
+          command: "/context",
           description: "Runtime context",
           usage: "/context [detail]",
-          source: "builtin",
+          source: "qwen",
+          executionMode: "qwen-sdk",
           available: true,
-        },
-        {
-          name: "/git:commit",
-          description: "Project commit helper",
-          source: "project",
-          available: true,
-          aliases: ["commit"],
-        },
-        {
-          name: "/model",
-          description:
-            "Switch the model for this session (--fast for suggestion model, --voice for voice transcription model, --vision for the vision bridge model, --project to persist to project settings, --global to persist to user settings, [model-id] to switch immediately, or [model-id] [prompt] to run a one-off prompt on another model; the inline prompt is sent verbatim without @file expansion).",
-          usage:
-            "/model [--fast|--voice|--vision] [--project|--global] [<model-id>] | <model-id> <prompt>",
-          source: "builtin",
-          available: true,
-        },
-        {
-          name: "/personal",
-          description: "Personal helper",
-          source: "user",
-          available: true,
-        },
+        }),
+        expect.objectContaining({
+          command: "/future-command",
+          description: "Command reported by the active Qwen runtime.",
+        }),
+        expect.objectContaining({
+          command: "/git:commit",
+          description: "Project helper",
+          origin: "project",
+          aliases: ["/commit"],
+        }),
       ]);
       expect(queryFactory).toHaveBeenCalledOnce();
-      expect(query.close).toHaveBeenCalledOnce();
+      expect(activeQuery.close).toHaveBeenCalledOnce();
     } finally {
-      if (previousQwenHome === undefined) {
-        delete process.env.QWEN_HOME;
-      } else {
-        process.env.QWEN_HOME = previousQwenHome;
-      }
-      await rm(root, { recursive: true, force: true });
+      await fixture.dispose();
     }
   });
 
-  it("keeps runtime usage metadata and exposes custom-only commands", async () => {
-    const root = await mkdtemp(
-      join(tmpdir(), "konnits-command-metadata-test-"),
-    );
-    const previousQwenHome = process.env.QWEN_HOME;
-    process.env.QWEN_HOME = join(root, "home");
+  it("exposes custom-only commands without inventing a static Qwen catalog", async () => {
+    const fixture = await createFixture("custom");
     try {
-      const workspace = join(root, "workspace");
-      await mkdir(join(workspace, ".qwen", "commands"), { recursive: true });
+      await mkdir(join(fixture.workspace, ".qwen", "commands"), {
+        recursive: true,
+      });
       await writeFile(
-        join(workspace, ".qwen", "commands", "review.md"),
+        join(fixture.workspace, ".qwen", "commands", "review.md"),
         "---\ndescription: Review the current change\nargument-hint: [path]\n---\nPrompt",
       );
-      const query = fakeQuery({
-        commands: [
-          {
-            name: "goal",
-            argumentHint: "[<condition> | clear]",
-            sourceLabel: "Built-in",
-          },
-          { name: "mystery" },
-        ],
-      });
-      const provider = new QwenCommandProvider(
-        () => ({ debug: false }),
-        { debug: vi.fn(), error: vi.fn() },
-        vi.fn(() => query) as unknown as QwenCommandQueryFactory,
-        async () => ({}) as never,
-      );
-
-      await expect(provider.discover(workspace)).resolves.toEqual([
-        {
-          name: "/goal",
-          description: "Set a goal — keep working until the condition is met",
-          usage: "/goal [<condition> | clear]",
-          source: "builtin",
-          available: true,
-        },
-        {
-          name: "/mystery",
-          source: "qwen",
-          available: true,
-        },
-        {
-          name: "/review",
+      const provider = providerFor(() => fakeQuery({ commands: ["mystery"] }));
+      await expect(provider.discover(fixture.workspace)).resolves.toEqual([
+        expect.objectContaining({ command: "/mystery", origin: "qwen" }),
+        expect.objectContaining({
+          command: "/review",
           description: "Review the current change",
           usage: "/review [path]",
-          source: "project",
-          available: true,
-        },
+          origin: "project",
+        }),
       ]);
     } finally {
-      if (previousQwenHome === undefined) {
-        delete process.env.QWEN_HOME;
-      } else {
-        process.env.QWEN_HOME = previousQwenHome;
-      }
-      await rm(root, { recursive: true, force: true });
+      await fixture.dispose();
     }
   });
 
-  it("returns an empty catalog when runtime discovery fails", async () => {
+  it("caches a workspace snapshot until explicitly refreshed", async () => {
+    const queryFactory = vi.fn(() =>
+      fakeQuery({ commands: ["status"] }),
+    ) as unknown as QwenCommandQueryFactory;
+    const provider = providerFor(queryFactory);
+    await provider.discover("C:\\workspace");
+    await provider.discover("C:\\workspace");
+    expect(queryFactory).toHaveBeenCalledOnce();
+    provider.refresh();
+    await provider.discover("C:\\workspace");
+    expect(queryFactory).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns an empty catalog and logs when runtime discovery fails", async () => {
     const logger = { debug: vi.fn(), error: vi.fn() };
     const provider = new QwenCommandProvider(
       () => ({ debug: false }),
@@ -167,44 +118,45 @@ describe("Qwen command discovery", () => {
         throw new Error("runtime unavailable");
       },
     );
-
     await expect(provider.discover("C:\\workspace")).resolves.toEqual([]);
     expect(logger.error).toHaveBeenCalledOnce();
   });
-
-  it("uses installed-runtime usage hints for context, resume, and tasks", async () => {
-    const query = fakeQuery({ commands: ["tasks", "context", "resume"] });
-    const queryFactory = vi.fn(
-      () => query,
-    ) as unknown as QwenCommandQueryFactory;
-    const provider = new QwenCommandProvider(
-      () => ({ debug: false }),
-      { debug: vi.fn(), error: vi.fn() },
-      queryFactory,
-      async () => ({}) as never,
-    );
-
-    const commands = await provider.discover("C:\\workspace");
-
-    expect(commands).toEqual([
-      expect.objectContaining({
-        name: "/context",
-        usage: "/context [detail]",
-      }),
-      expect.objectContaining({
-        name: "/resume",
-        usage: "/resume [session-id]",
-      }),
-      expect.objectContaining({ name: "/tasks", usage: "/tasks" }),
-    ]);
-    expect(queryFactory).toHaveBeenCalledOnce();
-    expect(query.close).toHaveBeenCalledOnce();
-  });
 });
 
-function fakeQuery(value: unknown): Query & {
-  readonly close: ReturnType<typeof vi.fn>;
-} {
+function providerFor(
+  queryFactory: QwenCommandQueryFactory,
+): QwenCommandProvider {
+  return new QwenCommandProvider(
+    () => ({ debug: false }),
+    { debug: vi.fn(), error: vi.fn() },
+    queryFactory,
+    async () => ({}) as never,
+  );
+}
+
+async function createFixture(name: string): Promise<{
+  readonly workspace: string;
+  readonly qwenHome: string;
+  dispose(): Promise<void>;
+}> {
+  const root = await mkdtemp(join(tmpdir(), `konnits-command-${name}-`));
+  const previous = process.env.QWEN_HOME;
+  const qwenHome = join(root, "home");
+  process.env.QWEN_HOME = qwenHome;
+  return {
+    workspace: join(root, "workspace"),
+    qwenHome,
+    dispose: async () => {
+      if (previous === undefined) delete process.env.QWEN_HOME;
+      else process.env.QWEN_HOME = previous;
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
+function fakeQuery(
+  value: unknown,
+): Query & { readonly close: ReturnType<typeof vi.fn> } {
   return {
     initialized: Promise.resolve(),
     supportedCommands: vi.fn(async () => value),

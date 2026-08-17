@@ -16,6 +16,10 @@ import { QwenCodeAgentClient } from "./qwen/QwenCodeAgentClient.js";
 import { QwenCommandProvider } from "./qwen/QwenCommandProvider.js";
 import { QwenSessionManager } from "./qwen/QwenSessionManager.js";
 import { QwenSessionHistoryService } from "./qwen/QwenSessionHistoryService.js";
+import { QwenSubagentCatalog } from "./qwen/QwenSubagentRegistry.js";
+import { SlashCommandRegistry } from "./commands/SlashCommandRegistry.js";
+import { KonnitsCommandRouter } from "./commands/KonnitsCommandRouter.js";
+import { registerKonnitsCommands } from "./commands/KonnitsCommands.js";
 
 export function activate(context: vscode.ExtensionContext): void {
   const configuration = new Configuration();
@@ -27,11 +31,16 @@ export function activate(context: vscode.ExtensionContext): void {
   const changes = new ChangeManager(fileSystem);
   const changeTracking = new ChangeTrackingService(changes, fileSystem);
   const permissions = new PermissionManager();
+  const subagents = new QwenSubagentCatalog(() =>
+    configuration.getQwenClientConfiguration(),
+  );
   const agent = new QwenCodeAgentClient(
     () => configuration.getQwenClientConfiguration(),
     permissions,
     changeTracking,
     logger,
+    undefined,
+    (runtime, workspacePath) => subagents.resolve(runtime, workspacePath),
   );
   const workspaceKey =
     vscode.workspace.workspaceFolders?.[0]?.uri.toString() ?? "no-workspace";
@@ -45,6 +54,9 @@ export function activate(context: vscode.ExtensionContext): void {
     () => configuration.getQwenClientConfiguration(),
     logger,
   );
+  const commandRegistry = new SlashCommandRegistry(commandProvider);
+  registerKonnitsCommands(commandRegistry, subagents);
+  const commandRouter = new KonnitsCommandRouter(commandRegistry);
   const referenceService = new WorkspaceReferenceService();
   const modelManagement = new ModelManagementController(
     new QwenSettingsService(),
@@ -62,11 +74,12 @@ export function activate(context: vscode.ExtensionContext): void {
     undefined,
     modelManagement,
     history,
+    commandRouter,
   );
   const view = new ChatViewProvider(
     context.extensionUri,
     controller,
-    commandProvider,
+    commandRegistry,
     referenceService,
   );
 
@@ -107,6 +120,18 @@ export function activate(context: vscode.ExtensionContext): void {
       controller.handleMessage({ type: "openModelSettings" }),
     ),
     vscode.workspace.onDidGrantWorkspaceTrust(() => controller.refreshTrust()),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("qwenFrontend")) {
+        commandRegistry.refresh();
+        subagents.refresh();
+        view.refreshCommands();
+      }
+    }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      commandRegistry.refresh();
+      subagents.refresh();
+      view.refreshCommands();
+    }),
   );
   logger.info("Qwen Frontend activated.");
 }
