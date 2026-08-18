@@ -14,6 +14,24 @@ Confirmed SDK behavior:
 - `Query.interrupt()` and an `AbortController` provide cancellation.
 - `sessionId` creates a caller-chosen session and `resume` resumes it on a later query.
 - `permissionMode: "default"` permits read-only tools and calls `canUseTool` for writes/commands; absent approval is fail-closed.
+- The installed SDK also declares `plan`, `auto-edit`, `auto`, and `yolo`.
+  Inspection of the bundled permission path confirmed that the three automatic
+  modes can authorize tools without invoking `canUseTool`; `plan` blocks
+  non-read-only tools. Konnits therefore exposes only `default` and `plan` while
+  pre-edit snapshots are captured in that callback.
+- Public `SDKUserMessage` input accepts text and the SDK's declared content
+  blocks but has no public image-input block. The installed Qwen CLI's native
+  `@` preprocessor does accept file/image paths within the workspace context.
+  Controlled attachment copies are consequently supplied as `@` references
+  with their storage root included in `QueryOptions.includeDirectories`, rather
+  than inventing an unsupported SDK payload.
+- Direct `Query` exposes resume/fork but no public rewind method. SDK 0.1.8's
+  public `DaemonClient` exposes `loadSession`, `getRewindSnapshots`, and
+  `rewindSession(sessionId, promptId, { rewindFiles })`. The installed daemon
+  implementation truncates model history before the selected user turn and
+  records a rewind branch in Qwen's transcript. Konnits uses this route with
+  `rewindFiles: false`; Qwen's own file-history restoration is not used because
+  it does not enforce the extension's dirty-document and proposal-hash checks.
 - `pathToQwenExecutable` is optional in the 0.1.8 declarations because the package includes a bundled CLI. It can still target an explicit installed Qwen executable.
 - The SDK and current Qwen Code require Node.js 22 or newer.
 - `Query.supportedCommands()` is a public control API. With the installed
@@ -163,7 +181,7 @@ The bundled CLI 0.19.10 response was inspected. It includes `totalTokens`, `cont
 
 A live SDK probe against the configured local Qwen model confirmed the distinction. One simple turn reported 39,023 cumulative input tokens and 196 output tokens at result level, while current context was 23,173 of 262,144 tokens. The current-context value matched the last model prompt rather than the result's cumulative input. Context is consequently stored independently and lower later values are accepted as valid compaction.
 
-With a single-string SDK prompt, the transport closes input as soon as the result is routed, leaving no reliable control-request window. The extension now uses the SDK's documented `AsyncIterable<SDKUserMessage>` prompt form for the same one user message, keeps that input stream open through the result, requests current context, and then closes it. This changes transport lifetime only; sessions remain one SDK query per user turn. Context-control failures are caught and do not change a successful agent result into a failed turn.
+With a single-string SDK prompt, the transport closes input as soon as the result is routed, leaving no reliable control-request or active-turn message window. The installed SDK's public `query()` declaration accepts `AsyncIterable<SDKUserMessage>` and its `Query` documentation describes multi-turn streaming input. The extension therefore owns a controlled input queue for the active query: it yields the initial prompt, accepts additional user messages while the run is active, keeps the stream open through context refresh, and closes it at the result boundary. This changes transport lifetime only; one Konnits conversation turn still owns one SDK query. Context-control failures are caught and do not change a successful agent result into a failed turn.
 
 Context refreshes are now scheduled at query initialization and useful typed boundaries (assistant completion, thought completion, tool start/result, and final result). A 500 ms debounce coalesces adjacent boundaries and the scheduler never overlaps `getContextUsage()` control requests. Mid-request values are published exactly as returned; stale values are accepted rather than interpolated. Completed assistant `message.usage` values are deduplicated by assistant UUID and accumulated progressively. The final result usage, when present, replaces the progressive aggregate as the authoritative turn total.
 

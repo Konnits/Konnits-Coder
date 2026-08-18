@@ -35,6 +35,7 @@
 - Conflict-safe user settings and `.env` writes with workspace-override warnings.
 - Rich slash-command metadata and native Chat History picker.
 - Unified dynamic slash-command routing with native `/help`, daemon-backed `/agents` listing, and local unavailable/unknown results.
+- Segmented Processing/Qwen message presentation, prompt retry/edit controls, and conflict-safe in-memory file checkpoints backed by Qwen conversation rewind.
 
 ## Future, not MVP
 

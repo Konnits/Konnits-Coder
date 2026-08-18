@@ -28,9 +28,17 @@ The first snapshot for a still-pending file remains the session base. Later Qwen
 
 Reads/searches need no snapshot. Shell commands still require user approval but are not assumed to be non-mutating.
 
+The SDK's automatic permission modes can bypass the permission callback, which
+would also bypass the pre-tool snapshot in step 3. Until change capture moves to
+a Qwen-supported interception/worktree boundary, the frontend exposes only
+`default` and read-only `plan`; `auto-edit`, `auto`, and `yolo` are intentionally
+unavailable.
+
 ## Review
 
 Both sides of the diff are immutable `qwen-review:` virtual documents. This keeps review deterministic even if the working file later changes. The title includes the workspace-relative file name.
+
+The chat UI follows VS Code's current review terminology: **Keep** maps to the internal accept operation and **Undo** maps to the internal reject operation. This is a presentation choice only; the verified state transitions and conflict checks below remain unchanged. Added, modified, and deleted badges are derived from the captured original/proposed existence rather than inferred from Git state.
 
 ## Accept
 
@@ -58,6 +66,25 @@ Accept All and Reject All process pending files independently. A conflict in one
 ## Concurrent/manual edits
 
 The live proposed-content hash and dirty-document check are the destructive-operation guard. If a user changes a pending file after Qwen's proposal, reject cannot overwrite it. The user can still inspect the immutable proposal and manually reconcile it.
+
+## Per-prompt checkpoints
+
+Before each normal prompt, `ChangeManager` records the exact disk state and
+change metadata for files already tracked in the session. A file first changed
+after that checkpoint uses the first captured `originalContent` as its target.
+Restore preflights every affected URI before writing: dirty editors, conflicted
+records, and content that no longer matches the latest captured agent state stop
+the complete operation.
+
+Writes are verified. If a multi-file restore fails partway through, the manager
+attempts to put already-written files back to their pre-operation contents and
+marks rollback failures conflicted. Editing a prompt additionally captures a
+temporary forward checkpoint, so a failed Qwen conversation rewind restores the
+newer files before reporting the failure.
+
+Checkpoints are intentionally not persisted because they contain complete file
+contents. They cannot cover arbitrary shell mutations that bypass dedicated edit
+tracking.
 
 There is a smaller race between the pre-tool snapshot and post-tool capture. The extension cannot prove byte-level authorship if a human edits the same file during that window. The final rejection guard prevents later overwrites but cannot separate interleaved bytes. The UI therefore labels the mechanism session tracking rather than staging.
 

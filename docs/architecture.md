@@ -25,6 +25,11 @@ The composer keeps a standard textarea. `ComposerInputParser` examines the
 current caret token and recognizes only valid whitespace-delimited `/` and `@`
 positions, so URLs and ordinary paths do not open a menu.
 
+The textarea grows with its content up to a bounded height and then uses its
+own scrollbar. The suggestion list follows the ARIA combobox/listbox pattern;
+arrow-key changes keep the active option visible, and Enter or Tab replaces
+the current token before dismissing that exact suggestion query.
+
 ```text
 textarea
   ├─ requestSlashCommands → ChatViewProvider → SlashCommandRegistry
@@ -82,14 +87,59 @@ not sent during search and are not stored in webview state. The visible user
 timeline text and its token estimate exclude injected reference contents; the
 timeline separately retains the selected reference metadata.
 
+Files chosen with the native picker and images pasted from the clipboard follow
+the same reference path. `ChatAttachmentService` copies them into an isolated,
+extension-owned directory, validates count/size/type limits, and issues typed
+references that cannot be forged by the webview. That directory is added to the
+new Qwen query's `includeDirectories`, allowing Qwen's native `@` preprocessor
+to read the copy without writing temporary files into the repository. Attachment
+selection is disabled after a turn starts because an active SDK query cannot
+safely expand that boundary. Image interpretation still depends on the selected
+model's vision support; arbitrary selected files are treated as Qwen references.
+
+While an agent turn is `running`, the same composer sends a typed follow-up
+through `AgentClient.sendMessage()` instead of starting a second run. The Qwen
+adapter owns a controlled `AsyncIterable<SDKUserMessage>` queue for the active
+SDK query; messages accepted before query construction are buffered, and the
+queue closes at Qwen's result boundary or cancellation. Accepted updates become
+typed `followUp` timeline activity inside the current turn so the webview does
+not mistake them for a new conversation turn. Connecting, permission-waiting,
+and cancelling states do not accept composer input.
+
+Every completed user turn exposes **Retry**. Retrying appends the same visible
+prompt and references as a new turn in the current session. It does not rewind
+conversation history or undo later file changes; those are separate, explicitly
+versioned operations.
+
+Prompts created in the current extension lifetime also receive a file checkpoint.
+**Edit** restores that checkpoint, asks a short-lived Qwen daemon to rewind only
+the Qwen-owned conversation, removes the edited and later local timeline items,
+and submits the replacement prompt through the normal direct SDK path. Qwen's
+daemon is always called with `rewindFiles: false`; `ChangeManager` remains the
+only restoration authority and refuses dirty, conflicted, or independently
+modified files. A temporary forward checkpoint restores the newer file state if
+the Qwen conversation rewind fails. **Restore files** applies only the safe file
+checkpoint and deliberately leaves conversation history unchanged.
+
+Checkpoints are memory-only and cover changes captured through dedicated edit
+tools. Historical sessions loaded after a reload and shell-only mutations do not
+receive a fabricated restore guarantee. Qwen may also reject editing an old turn
+whose model context has already been compacted.
+
+The composer permission control opens the extension-scoped native settings
+view. Only `default` (approval before sensitive tools) and `plan` (read-only)
+are available. The selection is read when the next SDK query is created, so no
+UI component depends on Qwen SDK permission objects.
+
 ## Components
 
-- `AgentClient`: connection, one active run, cancellation, and event subscription boundary.
+- `AgentClient`: connection, one active run, active-run message input, cancellation, and event subscription boundary.
 - `QwenCodeAgentClient`: owns SDK queries, permission callbacks, session resumption, and stderr diagnostics.
 - `QwenEventAdapter`: converts streaming text/thinking blocks, assistant blocks, tool calls/results, and Qwen subagent parent IDs to domain events.
 - `ContextUsageRefreshScheduler`: debounces boundary-driven context control requests and serializes them so `getContextUsage()` is never called concurrently.
 - `QwenSessionManager`: persists only the workspace session identifier; chat bodies and file content are not persisted.
 - `QwenSessionHistoryService`: invokes Qwen's machine-readable session list, filters entries to open workspace roots, loads historical JSONL as display-only timeline data, and removes only validated Qwen-owned transcript/sidecar/file-history paths.
+- `QwenSessionRewindService`: owns a short-lived daemon only for public Qwen conversation rewind, explicitly disabling Qwen file restoration.
 - `QwenTranscriptLoader`: translates persisted Qwen records into the internal timeline without executing historical tools or passing raw protocol records to React.
 - `ChatController`: application state machine, typed webview message dispatch, permissions, and coordination of agent events with change tracking.
 - `ModelManagementController`: native VS Code quick-pick/input flows for selecting, adding, editing, testing, and opening Qwen model configuration. Credential entry is a native password input and never enters webview state.
@@ -106,6 +156,7 @@ timeline separately retains the selected reference metadata.
 - `KonnitsCommandRouter`: classifies command syntax before a Qwen session or turn is created and dispatches registered native handlers without a command-name switch.
 - `QwenSubagentCatalog`: shared cached daemon-backed agent definitions used by both native `/agents` listing and Qwen session options.
 - `WorkspaceReferenceService`: bounded, fuzzy, workspace-relative file/directory discovery using stable VS Code APIs.
+- `ChatAttachmentService`: validates and copies user-selected files and clipboard images into isolated extension storage, then authorizes the resulting references.
 - `QwenReferenceSerializer`: Qwen-compatible path escaping and multi-root serialization.
 - `Configuration` and `Logger`: centralized settings and secret-conscious diagnostics.
 
@@ -138,7 +189,16 @@ interrupt and abort semantics.
 
 ### Turn finality
 
-Agent preamble, reasoning summaries, and structured tool events remain processing activity. An `agent.completed` event promotes only the matching terminal assistant message (or the explicit completion result) to a typed `finalResponse` timeline item. The webview groups activity and the final response by user turn, renders processing in a collapsible region, and always renders the final response outside that region. This typed boundary prevents presentation heuristics from hiding preamble text or treating arbitrary assistant chunks as final output.
+Thinking, user follow-ups, and structured tool events remain processing activity.
+Root assistant messages are ordered presentation boundaries: each one closes the
+current collapsible Processing segment, renders as a normal Qwen message, and a
+later tool/thought opens a new Processing segment below it. Child assistant
+messages remain inside their owning subagent tree. An `agent.completed` event
+promotes only the matching terminal assistant message (or explicit completion
+result) to a typed `finalResponse`, also outside Processing. No text heuristic is
+used to decide these boundaries.
+
+Qwen `todo_write` input is validated at the adapter boundary and emitted as a typed `todos.updated` domain event. `ChatController` keeps the root session's current todo list outside the conversational timeline, ignores nested subagent lists, and clears it when the active session changes. The webview presents Todos and changed files as separate compact disclosure panels. Completed Agent activities remain expanded by default when they own child activity so nested thinking stays discoverable; a manual collapse remains authoritative. The changed-files panel derives added/modified/deleted presentation from the captured proposal and retains the native diff-review and safe accept/reject operations.
 
 ### Token metrics
 
@@ -158,16 +218,18 @@ The webview keeps an explicit follow-latest state based on distance from the doc
 
 ## UI states
 
-The application state explicitly distinguishes `idle`, `connecting`, `connected`, `running`, `waitingForPermission`, `cancelling`, `failed`, and `completed`. File state distinguishes `pending`, `accepted`, `rejected`, and `conflicted`.
+The application state explicitly distinguishes `idle`, `connecting`, `connected`, `running`, `waitingForPermission`, `cancelling`, `restoring`, `failed`, and `completed`. File state distinguishes `pending`, `accepted`, `rejected`, and `conflicted`.
 
 ## Security
 
 - Agent execution is blocked in untrusted workspaces.
 - The webview uses `default-src 'none'`, a per-render script nonce, constrained local resource roots, and no HTML rendering of agent text.
 - Webview messages are runtime validated.
+- Attachment references must match records issued by `ChatAttachmentService`; copied payloads have bounded size/count and are deleted best-effort when the service is disposed.
 - SDK stderr is sent to a dedicated output channel and never includes environment dumps. Debug output is opt-in.
 - File targets are canonical workspace URIs and must remain inside an open workspace folder.
 - Permission requests default to denial on timeout, cancellation, disposal, or malformed input.
+- Permission modes that bypass `canUseTool` are not exposed while change capture depends on that callback.
 - API tokens are accepted only by a native password input, stored in Qwen's `.env` through a generated `envKey`, and excluded from webview contracts and diagnostics.
 - Invalid JSON, project overrides, and concurrent settings or `.env` changes stop the write. Existing files receive a one-time `.konnits-backup`, and replacements use a same-directory temporary file plus rename.
 
