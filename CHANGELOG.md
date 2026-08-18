@@ -4,13 +4,14 @@
 
 - Redesign the chat scroll region with a correctly anchored jump-to-latest control and processing panels that use the available vertical space.
 - Show nested subagent thinking and activity as structured expandable trees, while rendering direct Qwen messages outside Processing and reopening Processing when later work begins.
-- Present current Todos and changed files as compact disclosure panels with status, diff counts, native review actions, and safe accept/reject controls.
+- Present current Todos and changed files as bottom-docked compact disclosure panels with status, diff counts, native review actions, and safe accept/reject controls.
 - Add a bounded auto-growing composer and make slash-command suggestions keyboard accessible, scroll the focused option into view, and complete selections with Enter or Tab.
 - Allow users to send follow-up messages while Qwen is working through the active SDK query input stream.
 - Add a composer permission control with approval-based `default`, read-only `plan`, and risk-acknowledged `yolo` full-access modes backed by centralized, fail-closed configuration.
 - Support native file attachments and pasted images through validated, size-limited, extension-owned temporary storage and Qwen workspace references.
 - Add prompt retry plus conflict-safe prompt editing and per-prompt file restoration using in-memory checkpoints and Qwen conversation-only rewind.
 - Add regression coverage for activity presentation, attachments, scrolling, disclosures, composer behavior, checkpoints, prompt rewind, typed contracts, and Qwen event adaptation.
+- Prevent streamed Qwen commentary from being duplicated across internal block transitions, keep completed reads out of edit tracking, and allow Qwen-managed auto-memory updates without treating them as workspace changes.
 
 ## 0.3.0
 

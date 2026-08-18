@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises";
-import { extname, isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   isAbortError,
@@ -506,7 +507,12 @@ export class QwenCodeAgentClient implements AgentClient {
         const events = adapter.adapt(message);
         for (const event of events) {
           this.emit(event);
-          if (event.type === "tool.completed" && event.target !== undefined) {
+          if (
+            event.type === "tool.completed" &&
+            event.kind === "edit" &&
+            event.target !== undefined &&
+            !isQwenManagedMemoryTarget(event.target)
+          ) {
             await this.changes.afterEdit(event.target);
           }
         }
@@ -691,7 +697,7 @@ export class QwenCodeAgentClient implements AgentClient {
     }
 
     const editTarget = getEditTarget(toolName, input);
-    if (editTarget !== undefined) {
+    if (editTarget !== undefined && !isQwenManagedMemoryTarget(editTarget)) {
       try {
         await this.changes.beforeEdit(editTarget);
       } catch (error) {
@@ -734,6 +740,37 @@ export class QwenCodeAgentClient implements AgentClient {
         this.logger.error("Unable to finalize tracked file changes.", error),
       );
   }
+}
+
+export function isQwenManagedMemoryTarget(
+  target: string,
+  qwenDirectory = resolveQwenDirectory(),
+): boolean {
+  const memoryDirectory = resolve(qwenDirectory, "memories");
+  const targetPath = resolve(target);
+  const relativeTarget = relative(memoryDirectory, targetPath);
+  return (
+    relativeTarget.length > 0 &&
+    relativeTarget !== ".." &&
+    !relativeTarget.startsWith(`..${sep}`) &&
+    !isAbsolute(relativeTarget)
+  );
+}
+
+function resolveQwenDirectory(): string {
+  const configured = process.env.QWEN_HOME?.trim();
+  if (configured === undefined || configured.length === 0) {
+    return join(homedir(), ".qwen");
+  }
+  if (
+    configured === "~" ||
+    configured.startsWith(`~${sep}`) ||
+    configured.startsWith("~/") ||
+    configured.startsWith("~\\")
+  ) {
+    return resolve(homedir(), configured.slice(2));
+  }
+  return resolve(configured);
 }
 
 interface ActiveQwenTurn {

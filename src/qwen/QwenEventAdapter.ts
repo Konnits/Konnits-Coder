@@ -194,7 +194,14 @@ export class QwenEventAdapter {
     const stream = this.streams.get(streamKey(message));
     const messageId = stream?.messageId ?? message.uuid;
     const parentId = message.parent_tool_use_id ?? undefined;
-    const hasStreamingMessage = this.streamedMessageUuids.has(message.uuid);
+    // Qwen emits message_start only once for a model turn, but may rotate the
+    // assistant message ID when thinking, text, and tool blocks transition.
+    // Presence of streamed content on the active parent stream is therefore
+    // authoritative; comparing only UUIDs replays the completed block.
+    const hasStreamingMessage =
+      (stream !== undefined &&
+        (stream.assistantStarted || stream.thoughts.size > 0)) ||
+      this.streamedMessageUuids.has(message.uuid);
     const content = message.message.content;
     const text = content
       .filter(
@@ -285,6 +292,9 @@ export class QwenEventAdapter {
       }
     }
     this.streams.delete(streamKey(message));
+    if (stream !== undefined) {
+      this.streamedMessageUuids.delete(stream.messageId);
+    }
     this.streamedMessageUuids.delete(message.uuid);
     return events;
   }

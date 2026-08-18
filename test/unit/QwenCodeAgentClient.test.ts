@@ -5,6 +5,7 @@ import { PermissionManager } from "../../src/permissions/PermissionManager.js";
 import {
   QwenCodeAgentClient,
   describeSdkMessageForDebug,
+  isQwenManagedMemoryTarget,
   resolveCliLaunch,
   type QwenChangeTracker,
   type QwenQueryFactory,
@@ -13,6 +14,87 @@ import {
 import type { QwenSubagentResolution } from "../../src/qwen/QwenSubagentRegistry.js";
 
 describe("QwenCodeAgentClient", () => {
+  it("recognizes only Qwen-managed memory files as external tracking exceptions", () => {
+    const qwenDirectory = "C:\\Users\\test\\.qwen";
+
+    expect(
+      isQwenManagedMemoryTarget(
+        "C:\\Users\\test\\.qwen\\memories\\user\\topic.md",
+        qwenDirectory,
+      ),
+    ).toBe(true);
+    expect(
+      isQwenManagedMemoryTarget(
+        "C:\\Users\\test\\.qwen\\settings.json",
+        qwenDirectory,
+      ),
+    ).toBe(false);
+    expect(
+      isQwenManagedMemoryTarget(
+        "C:\\Users\\test\\project\\README.md",
+        qwenDirectory,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows Qwen-managed memory edits without adding workspace change tracking", async () => {
+    const previousQwenHome = process.env.QWEN_HOME;
+    process.env.QWEN_HOME = "C:\\qwen-home";
+    try {
+      const memoryTarget = "C:\\qwen-home\\memories\\user\\doctoral-thesis.md";
+      const requests: Parameters<QwenQueryFactory>[0][] = [];
+      const permissions = new PermissionManager();
+      const beforeEdit = vi.fn(async () => undefined);
+      const afterEdit = vi.fn(async () => undefined);
+      const changes: QwenChangeTracker = {
+        beforeEdit,
+        afterEdit,
+        completeAll: vi.fn(async () => undefined),
+      };
+      const client = new QwenCodeAgentClient(
+        () => ({ debug: false }),
+        permissions,
+        changes,
+        {
+          debug: vi.fn<(message: string) => void>(),
+          info: vi.fn<(message: string) => void>(),
+          error: vi.fn<(message: string, error?: unknown) => void>(),
+        },
+        vi.fn(((request) => {
+          requests.push(request);
+          return memoryEditQuery(memoryTarget);
+        }) as QwenQueryFactory),
+      );
+
+      await client.run(runRequest());
+
+      expect(afterEdit).not.toHaveBeenCalled();
+      const candidate = requests[0]?.options?.canUseTool as unknown;
+      if (!isToolPermissionCallback(candidate)) {
+        throw new Error("Expected a Qwen tool permission callback.");
+      }
+      const decision = candidate(
+        "write_file",
+        { file_path: memoryTarget },
+        { signal: new AbortController().signal },
+      );
+      const permission = permissions.list()[0];
+      if (permission === undefined) {
+        throw new Error("Expected a pending memory edit permission.");
+      }
+      permissions.resolve(permission.id, "allow");
+
+      await expect(decision).resolves.toMatchObject({ behavior: "allow" });
+      expect(beforeEdit).not.toHaveBeenCalled();
+    } finally {
+      if (previousQwenHome === undefined) {
+        delete process.env.QWEN_HOME;
+      } else {
+        process.env.QWEN_HOME = previousQwenHome;
+      }
+    }
+  });
+
   it("keeps the exact user prompt separate from executable configuration", async () => {
     const requests: Parameters<QwenQueryFactory>[0][] = [];
     const queryFactory = vi.fn(((request) => {
@@ -296,6 +378,62 @@ describe("QwenCodeAgentClient", () => {
     expect(events.indexOf("agent.completed")).toBeGreaterThan(
       events.indexOf("tool.completed"),
     );
+  });
+
+  it("does not track a completed external read as a workspace edit", async () => {
+    const afterEdit = vi.fn(async () => {
+      throw new Error("External reads must not enter change tracking.");
+    });
+    const client = new QwenCodeAgentClient(
+      () => ({ debug: false }),
+      new PermissionManager(),
+      {
+        beforeEdit: vi.fn(async () => undefined),
+        afterEdit,
+        completeAll: vi.fn(async () => undefined),
+      },
+      {
+        debug: vi.fn<(message: string) => void>(),
+        info: vi.fn<(message: string) => void>(),
+        error: vi.fn<(message: string, error?: unknown) => void>(),
+      },
+      vi.fn((() =>
+        toolLoopQuery(
+          "C:\\Users\\test\\AppData\\Local\\qwen-code\\README.md",
+        )) as QwenQueryFactory),
+    );
+    const events: string[] = [];
+    client.onEvent((event) => events.push(event.type));
+
+    await client.run(runRequest());
+
+    expect(afterEdit).not.toHaveBeenCalled();
+    expect(events).toContain("agent.completed");
+    expect(events).not.toContain("agent.failed");
+  });
+
+  it("continues tracking completed workspace edits", async () => {
+    const afterEdit = vi.fn(async () => undefined);
+    const client = new QwenCodeAgentClient(
+      () => ({ debug: false }),
+      new PermissionManager(),
+      {
+        beforeEdit: vi.fn(async () => undefined),
+        afterEdit,
+        completeAll: vi.fn(async () => undefined),
+      },
+      {
+        debug: vi.fn<(message: string) => void>(),
+        info: vi.fn<(message: string) => void>(),
+        error: vi.fn<(message: string, error?: unknown) => void>(),
+      },
+      vi.fn((() => memoryEditQuery("src/app.ts")) as QwenQueryFactory),
+    );
+
+    await client.run(runRequest());
+
+    expect(afterEdit).toHaveBeenCalledOnce();
+    expect(afterEdit).toHaveBeenCalledWith("src/app.ts");
   });
 
   it("emits authoritative turn and current-context usage separately", async () => {
@@ -917,7 +1055,7 @@ function isDeniedToolPermissionDecision(
   return decision.behavior === "deny" && typeof decision.message === "string";
 }
 
-function toolLoopQuery(): Query {
+function toolLoopQuery(target = "README.md"): Query {
   return fakeQuery(async function* () {
     yield {
       type: "assistant",
@@ -931,7 +1069,7 @@ function toolLoopQuery(): Query {
             type: "tool_use",
             id: "tool-1",
             name: "read_file",
-            input: { file_path: "README.md" },
+            input: { file_path: target },
           },
         ],
       },
@@ -968,6 +1106,45 @@ function toolLoopQuery(): Query {
       is_error: false,
       result: "Project summary",
     } as SDKMessage;
+  });
+}
+
+function memoryEditQuery(memoryTarget: string): Query {
+  return fakeQuery(async function* () {
+    yield {
+      type: "assistant",
+      uuid: "assistant-memory-edit",
+      session_id: "session",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "memory-edit",
+            name: "write_file",
+            input: { file_path: memoryTarget, content: "updated memory" },
+          },
+        ],
+      },
+    } as SDKMessage;
+    yield {
+      type: "user",
+      session_id: "session",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "memory-edit",
+            content: "Updated memory",
+            is_error: false,
+          },
+        ],
+      },
+    } as SDKMessage;
+    yield resultMessage("Memory updated");
   });
 }
 

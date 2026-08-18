@@ -65,6 +65,54 @@ describe("QwenEventAdapter", () => {
     ).toHaveLength(1);
   });
 
+  it("does not replay streamed text after Qwen rotates the message ID", () => {
+    const adapter = new QwenEventAdapter();
+    const events = [
+      adapter.adapt(
+        partial({
+          type: "message_start",
+          message: { id: "turn-start", role: "assistant", model: "qwen" },
+        }),
+      ),
+      adapter.adapt(
+        partial({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "Inspecting" },
+        }),
+      ),
+      adapter.adapt(
+        assistant(
+          [{ type: "thinking", thinking: "Inspecting" }],
+          null,
+          "thinking-block",
+        ),
+      ),
+      // Qwen does not emit another message_start for this block transition.
+      adapter.adapt(
+        partial({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "One copy only." },
+        }),
+      ),
+      adapter.adapt(
+        assistant(
+          [{ type: "text", text: "One copy only." }],
+          null,
+          "text-block",
+        ),
+      ),
+      adapter.adapt(partial({ type: "message_stop" })),
+    ].flat();
+
+    expect(
+      events
+        .filter((event) => event.type === "assistant.message.chunk")
+        .map((event) => event.text),
+    ).toEqual(["One copy only."]);
+  });
+
   it("streams thinking separately, measures its lifetime, and avoids complete-message duplication", () => {
     vi.useFakeTimers();
     try {

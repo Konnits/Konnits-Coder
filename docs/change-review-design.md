@@ -28,6 +28,12 @@ The first snapshot for a still-pending file remains the session base. Later Qwen
 
 Reads/searches need no snapshot. Shell commands still require user approval but are not assumed to be non-mutating.
 
+Qwen-managed auto-memory topic files under the effective
+`$QWEN_HOME/memories/` directory are an explicit exception. Qwen may maintain
+those files outside the open workspace, so the frontend leaves their access to
+Qwen's permission mode and excludes them from project change tracking. Other
+external edit targets remain ineligible for a safe project snapshot.
+
 The SDK's automatic permission modes can bypass the permission callback, which
 also bypasses the pre-tool snapshot in step 3. The frontend exposes `yolo` only
 as an explicitly acknowledged **Full access** mode. Its modal warns that Changed
