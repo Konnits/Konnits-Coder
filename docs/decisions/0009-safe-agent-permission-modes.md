@@ -1,5 +1,7 @@
 # ADR 0009: Expose only permission modes compatible with change capture
 
+Status: Superseded by ADR 0011.
+
 ## Context
 
 Qwen Code SDK 0.1.8 supports `default`, `plan`, `auto-edit`, `auto`, and `yolo`

@@ -36,6 +36,7 @@
 - Rich slash-command metadata and native Chat History picker.
 - Unified dynamic slash-command routing with native `/help`, daemon-backed `/agents` listing, and local unavailable/unknown results.
 - Segmented Processing/Qwen message presentation, prompt retry/edit controls, and conflict-safe in-memory file checkpoints backed by Qwen conversation rewind.
+- Native agent permission picker with fail-closed, risk-acknowledged full access.
 
 ## Future, not MVP
 

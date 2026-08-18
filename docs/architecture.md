@@ -126,10 +126,14 @@ tools. Historical sessions loaded after a reload and shell-only mutations do not
 receive a fabricated restore guarantee. Qwen may also reject editing an old turn
 whose model context has already been compacted.
 
-The composer permission control opens the extension-scoped native settings
-view. Only `default` (approval before sensitive tools) and `plan` (read-only)
-are available. The selection is read when the next SDK query is created, so no
-UI component depends on Qwen SDK permission objects.
+The composer permission control opens a native mode picker. `default` requests
+approval before sensitive tools, `plan` is read-only, and `yolo` grants full
+access without approval prompts. Selecting full access requires a modal risk
+declaration that explicitly warns about command, deletion, out-of-workspace,
+and incomplete change-restoration risks. Consent is stored per workspace; a
+manually written `yolo` setting remains fail-closed as `default` until the same
+warning is accepted. The effective selection is read when the next SDK query
+is created, so no UI component depends on Qwen SDK permission objects.
 
 ## Components
 
@@ -229,7 +233,7 @@ The application state explicitly distinguishes `idle`, `connecting`, `connected`
 - SDK stderr is sent to a dedicated output channel and never includes environment dumps. Debug output is opt-in.
 - File targets are canonical workspace URIs and must remain inside an open workspace folder.
 - Permission requests default to denial on timeout, cancellation, disposal, or malformed input.
-- Permission modes that bypass `canUseTool` are not exposed while change capture depends on that callback.
+- Full access is ineffective without per-workspace acknowledgement. Once enabled, Qwen bypasses `canUseTool`, so the modal warns that change capture and restoration cannot be guaranteed for that turn.
 - API tokens are accepted only by a native password input, stored in Qwen's `.env` through a generated `envKey`, and excluded from webview contracts and diagnostics.
 - Invalid JSON, project overrides, and concurrent settings or `.env` changes stop the write. Existing files receive a one-time `.konnits-backup`, and replacements use a same-directory temporary file plus rename.
 

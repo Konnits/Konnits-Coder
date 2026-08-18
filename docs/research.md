@@ -15,10 +15,11 @@ Confirmed SDK behavior:
 - `sessionId` creates a caller-chosen session and `resume` resumes it on a later query.
 - `permissionMode: "default"` permits read-only tools and calls `canUseTool` for writes/commands; absent approval is fail-closed.
 - The installed SDK also declares `plan`, `auto-edit`, `auto`, and `yolo`.
-  Inspection of the bundled permission path confirmed that the three automatic
-  modes can authorize tools without invoking `canUseTool`; `plan` blocks
-  non-read-only tools. Konnits therefore exposes only `default` and `plan` while
-  pre-edit snapshots are captured in that callback.
+  Inspection of the bundled permission path confirmed that automatic modes can
+  authorize tools without invoking `canUseTool`; `plan` blocks non-read-only
+  tools and `yolo` auto-approves every tool before the callback. Konnits exposes
+  `yolo` only behind an explicit, per-workspace risk acknowledgement. Until it
+  is acknowledged, a configured `yolo` value is interpreted as `default`.
 - Public `SDKUserMessage` input accepts text and the SDK's declared content
   blocks but has no public image-input block. The installed Qwen CLI's native
   `@` preprocessor does accept file/image paths within the workspace context.

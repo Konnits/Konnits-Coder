@@ -29,10 +29,11 @@ The first snapshot for a still-pending file remains the session base. Later Qwen
 Reads/searches need no snapshot. Shell commands still require user approval but are not assumed to be non-mutating.
 
 The SDK's automatic permission modes can bypass the permission callback, which
-would also bypass the pre-tool snapshot in step 3. Until change capture moves to
-a Qwen-supported interception/worktree boundary, the frontend exposes only
-`default` and read-only `plan`; `auto-edit`, `auto`, and `yolo` are intentionally
-unavailable.
+also bypasses the pre-tool snapshot in step 3. The frontend exposes `yolo` only
+as an explicitly acknowledged **Full access** mode. Its modal warns that Changed
+Files and restoration may be incomplete; `auto-edit` and `auto` remain
+unavailable because they add weaker automation without providing full-access
+semantics or a reliable capture boundary.
 
 ## Review
 
@@ -85,6 +86,10 @@ newer files before reporting the failure.
 Checkpoints are intentionally not persisted because they contain complete file
 contents. They cannot cover arbitrary shell mutations that bypass dedicated edit
 tracking.
+
+The same limitation applies to acknowledged Full access. Qwen bypasses
+`canUseTool` in `yolo`, so the extension does not claim safe restoration for
+mutations it could not capture.
 
 There is a smaller race between the pre-tool snapshot and post-tool capture. The extension cannot prove byte-level authorship if a human edits the same file during that window. The final rejection guard prevents later overwrites but cannot separate interleaved bytes. The UI therefore labels the mechanism session tracking rather than staging.
 
