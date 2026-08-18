@@ -1,5 +1,5 @@
-export type AgentPermissionMode = "default" | "plan";
+export type AgentPermissionMode = "default" | "plan" | "yolo";
 
 export function parseAgentPermissionMode(value: string): AgentPermissionMode {
-  return value === "plan" ? "plan" : "default";
+  return value === "plan" || value === "yolo" ? value : "default";
 }

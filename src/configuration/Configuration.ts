@@ -4,8 +4,11 @@ import {
   type QwenClientConfiguration,
 } from "../qwen/QwenCodeAgentClient.js";
 import { parseConfigurationValues } from "./ConfigurationValues.js";
+import type { AgentPermissionMode } from "../permissions/AgentPermissionMode.js";
 
 export class Configuration {
+  constructor(private readonly permissionMode?: () => AgentPermissionMode) {}
+
   getQwenClientConfiguration(): QwenClientConfiguration {
     const configuration = vscode.workspace.getConfiguration("qwenFrontend");
     return parseConfigurationValues(
@@ -16,7 +19,8 @@ export class Configuration {
         "qwen.streamIdleTimeoutMs",
         DEFAULT_QWEN_STREAM_IDLE_TIMEOUT_MS,
       ),
-      configuration.get<string>("qwen.permissionMode", "default"),
+      this.permissionMode?.() ??
+        configuration.get<string>("qwen.permissionMode", "default"),
     );
   }
 }

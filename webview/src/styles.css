@@ -361,6 +361,14 @@ button.danger {
   background: var(--vscode-toolbar-hoverBackground);
 }
 
+.icon-button.permission-mode-plan {
+  color: var(--vscode-charts-blue);
+}
+
+.icon-button.permission-mode-yolo {
+  color: var(--vscode-testing-iconFailed);
+}
+
 .message-action svg,
 .icon-button svg {
   fill: none;

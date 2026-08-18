@@ -138,15 +138,17 @@
           "type": "string",
           "enum": [
             "default",
-            "plan"
+            "plan",
+            "yolo"
           ],
           "enumDescriptions": [
             "Ask before write operations and commands.",
-            "Allow read-only analysis and block write operations."
+            "Allow read-only analysis and block write operations.",
+            "Allow every tool without approval. Requires an explicit risk acknowledgement in the chat permission picker before it becomes effective."
           ],
           "default": "default",
           "scope": "window",
-          "description": "Controls the permissions granted to Qwen. Automatic edit and unrestricted modes are intentionally unavailable because they bypass safe file-change snapshots."
+          "description": "Controls permissions for new Qwen turns. Full access bypasses approval and may bypass safe file-change snapshots; it remains ineffective until its risk warning is explicitly accepted in the chat permission picker."
         },
         "qwenFrontend.qwen.streamIdleTimeoutMs": {
           "type": "number",

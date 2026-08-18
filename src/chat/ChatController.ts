@@ -18,6 +18,7 @@ import type {
   ModelSelectorViewState,
 } from "../models/ModelTypes.js";
 import type { PermissionManager } from "../permissions/PermissionManager.js";
+import type { AgentPermissionModeManagement } from "../permissions/AgentPermissionModeService.js";
 import type { KonnitsCommandRouter } from "../commands/KonnitsCommandRouter.js";
 import type { QwenSessionManager } from "../qwen/QwenSessionManager.js";
 import type {
@@ -68,11 +69,15 @@ export class ChatController implements vscode.Disposable {
     private readonly commands?: KonnitsCommandRouter,
     private readonly attachments?: ChatAttachmentAuthorization,
     private readonly sessionRewind?: SessionRewind,
+    private readonly permissionModes?: AgentPermissionModeManagement,
   ) {
     this.disposables.push(
       this.agent.onEvent((event) => this.handleAgentEvent(event)),
       this.permissions.onDidChange(() => this.handlePermissionsChanged()),
       this.changes.onDidChange(() => this.emitChange()),
+      ...(this.permissionModes === undefined
+        ? []
+        : [this.permissionModes.onDidChange(() => this.emitChange())]),
     );
   }
 
@@ -81,6 +86,7 @@ export class ChatController implements vscode.Disposable {
     return {
       status: this.status,
       trusted: vscode.workspace.isTrusted,
+      permissionMode: this.permissionModes?.current() ?? "default",
       ...(this.sessionId === undefined ? {} : { sessionId: this.sessionId }),
       ...(workspacePath === undefined ? {} : { workspacePath }),
       ...(this.contextUsage === undefined ||
@@ -467,10 +473,14 @@ export class ChatController implements vscode.Disposable {
           await this.openModelSettings();
           break;
         case "openPermissionSettings":
-          await vscode.commands.executeCommand(
-            "workbench.action.openSettings",
-            "@ext:Konnits.konnits-coder qwenFrontend.qwen.permissionMode",
-          );
+          if (this.permissionModes === undefined) {
+            await vscode.commands.executeCommand(
+              "workbench.action.openSettings",
+              "@ext:Konnits.konnits-coder qwenFrontend.qwen.permissionMode",
+            );
+          } else {
+            await this.permissionModes.select();
+          }
           break;
         case "retryPrompt":
           await this.retryPrompt(message.id);

@@ -8,6 +8,7 @@ import type { FileChangeStatus } from "../changes/ProposedFileChange.js";
 import type { PermissionRisk } from "../permissions/toolRisk.js";
 import type { ModelSelectorViewState } from "../models/ModelTypes.js";
 import type { SlashCommandDescriptor } from "../commands/SlashCommand.js";
+import type { AgentPermissionMode } from "../permissions/AgentPermissionMode.js";
 
 export type ExecutionStatus =
   | "idle"
@@ -157,6 +158,7 @@ export interface PermissionViewModel {
 export interface AppState {
   readonly status: ExecutionStatus;
   readonly trusted: boolean;
+  readonly permissionMode: AgentPermissionMode;
   readonly sessionId?: string;
   readonly workspacePath?: string;
   readonly contextUsage?: ContextTokenUsage;

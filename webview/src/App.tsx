@@ -37,6 +37,7 @@ const SUGGESTION_LISTBOX_ID = "composer-suggestions";
 const initialState: AppState = {
   status: "idle",
   trusted: true,
+  permissionMode: "default",
   model: { label: "Loading model…", configuredCount: 0 },
   timeline: [],
   todos: [],
@@ -624,9 +625,9 @@ export function App(): React.JSX.Element {
             </button>
             <button
               type="button"
-              className="icon-button"
-              title="Manage agent permissions"
-              aria-label="Manage agent permissions"
+              className={`icon-button permission-mode-${state.permissionMode}`}
+              title={permissionModeTitle(state.permissionMode)}
+              aria-label={`Manage agent permissions. ${permissionModeTitle(state.permissionMode)}`}
               onClick={() =>
                 vscode.postMessage({ type: "openPermissionSettings" })
               }
@@ -686,6 +687,10 @@ function isStateMessage(
     typeof state.status === "string" &&
     "trusted" in state &&
     typeof state.trusted === "boolean" &&
+    "permissionMode" in state &&
+    (state.permissionMode === "default" ||
+      state.permissionMode === "plan" ||
+      state.permissionMode === "yolo") &&
     "model" in state &&
     typeof state.model === "object" &&
     state.model !== null &&
@@ -698,6 +703,17 @@ function isStateMessage(
     "permissions" in state &&
     Array.isArray(state.permissions)
   );
+}
+
+function permissionModeTitle(mode: AppState["permissionMode"]): string {
+  switch (mode) {
+    case "default":
+      return "Permissions: ask before sensitive actions";
+    case "plan":
+      return "Permissions: plan only";
+    case "yolo":
+      return "Permissions: full access — no approval prompts";
+  }
 }
 
 function isSlashCommandsMessage(
