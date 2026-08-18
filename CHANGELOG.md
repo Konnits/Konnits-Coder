@@ -12,6 +12,10 @@
 - Add prompt retry plus conflict-safe prompt editing and per-prompt file restoration using in-memory checkpoints and Qwen conversation-only rewind.
 - Add regression coverage for activity presentation, attachments, scrolling, disclosures, composer behavior, checkpoints, prompt rewind, typed contracts, and Qwen event adaptation.
 - Prevent streamed Qwen commentary from being duplicated across internal block transitions, keep completed reads out of edit tracking, and allow Qwen-managed auto-memory updates without treating them as workspace changes.
+- Render submitted user prompts and active-turn follow-ups through the same safe GitHub Flavored Markdown path as assistant messages.
+- Keep tracked file modifications expanded and visible, add an explicit Todos clear action, and clear Todo state consistently when starting or restoring sessions.
+- Time each Thinking interval independently so tool or message boundaries freeze the previous duration and later thoughts restart from zero.
+- Offer to add the exact parent directory of an external edit target to the VS Code workspace, preserving Changed Files review while refusing silent or filesystem-root authorization.
 
 ## 0.3.0
 

@@ -194,6 +194,9 @@ interrupt and abort semantics.
 ### Turn finality
 
 Thinking, user follow-ups, and structured tool events remain processing activity.
+Each thinking interval is timed independently. Starting a tool, direct assistant
+message, or later thought in the same root/subagent stream closes the preceding
+interval so its elapsed time stops and the next interval starts from zero.
 Root assistant messages are ordered presentation boundaries: each one closes the
 current collapsible Processing segment, renders as a normal Qwen message, and a
 later tool/thought opens a new Processing segment below it. Child assistant
@@ -202,7 +205,7 @@ promotes only the matching terminal assistant message (or explicit completion
 result) to a typed `finalResponse`, also outside Processing. No text heuristic is
 used to decide these boundaries.
 
-Qwen `todo_write` input is validated at the adapter boundary and emitted as a typed `todos.updated` domain event. `ChatController` keeps the root session's current todo list outside the conversational timeline, ignores nested subagent lists, and clears it when the active session changes. The webview presents Todos and changed files as separate compact disclosure panels in a bottom dock between the independently scrolling conversation and the composer. Expanded summaries have a bounded, independently scrolling height so the composer remains visible. Completed Agent activities remain expanded by default when they own child activity so nested thinking stays discoverable; a manual collapse remains authoritative. The changed-files panel derives added/modified/deleted presentation from the captured proposal and retains the native diff-review and safe accept/reject operations.
+Qwen `todo_write` input is validated at the adapter boundary and emitted as a typed `todos.updated` domain event. `ChatController` keeps the root session's current todo list outside the conversational timeline, ignores nested subagent lists, and clears it when the active session changes or the user explicitly clears Todos. The webview presents Todos and changed files in a bottom dock between the independently scrolling conversation and the composer. Changed files remain expanded so every tracked modification is visible; Todos retain a compact disclosure with a clear action. Expanded summaries have a bounded, independently scrolling height so the composer remains visible. Completed Agent activities remain expanded by default when they own child activity so nested thinking stays discoverable; a manual collapse remains authoritative. The changed-files panel derives added/modified/deleted presentation from the captured proposal and retains the native diff-review and safe accept/reject operations.
 
 ### Token metrics
 
@@ -231,7 +234,10 @@ The application state explicitly distinguishes `idle`, `connecting`, `connected`
 - Webview messages are runtime validated.
 - Attachment references must match records issued by `ChatAttachmentService`; copied payloads have bounded size/count and are deleted best-effort when the service is disposed.
 - SDK stderr is sent to a dedicated output channel and never includes environment dumps. Debug output is opt-in.
-- File targets are canonical workspace URIs and must remain inside an open workspace folder.
+- File targets are resolved workspace URIs. An external dedicated-edit target
+  remains blocked unless the user confirms adding its immediate parent as a
+  workspace folder; filesystem roots and silent broad-parent inclusion are
+  refused.
 - Permission requests default to denial on timeout, cancellation, disposal, or malformed input.
 - Full access is ineffective without per-workspace acknowledgement. Once enabled, Qwen bypasses `canUseTool`, so the modal warns that change capture and restoration cannot be guaranteed for that turn.
 - API tokens are accepted only by a native password input, stored in Qwen's `.env` through a generated `envKey`, and excluded from webview contracts and diagnostics.

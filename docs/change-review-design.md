@@ -21,18 +21,27 @@ The first snapshot for a still-pending file remains the session base. Later Qwen
 ## Capture flow
 
 1. Qwen requests a dedicated edit/write tool.
-2. The permission callback extracts its absolute `file_path`/`path` and verifies it is inside the workspace.
+2. The permission callback extracts its absolute `file_path`/`path`. If its
+   immediate parent is outside the workspace, Konnits-Coder offers to create and
+   add that exact directory as a workspace folder before continuing.
 3. Before approval, the extension reads the file or records that it is absent.
 4. Qwen runs the tool.
 5. On its tool result, the extension reads the target again and records the proposal if content changed.
 
 Reads/searches need no snapshot. Shell commands still require user approval but are not assumed to be non-mutating.
 
+External folders are never added automatically. The confirmation names the
+exact target and directory, filesystem roots are refused, and rejection or a
+failed VS Code workspace update retains no authorization. Once inclusion has
+started successfully, the directory participates in the same snapshots, review,
+conflict detection, and restoration rules as every other workspace folder.
+
 Qwen-managed auto-memory topic files under the effective
 `$QWEN_HOME/memories/` directory are an explicit exception. Qwen may maintain
 those files outside the open workspace, so the frontend leaves their access to
 Qwen's permission mode and excludes them from project change tracking. Other
-external edit targets remain ineligible for a safe project snapshot.
+external edit targets remain ineligible until the user confirms their workspace
+inclusion.
 
 The SDK's automatic permission modes can bypass the permission callback, which
 also bypasses the pre-tool snapshot in step 3. The frontend exposes `yolo` only

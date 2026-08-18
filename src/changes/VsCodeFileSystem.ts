@@ -2,6 +2,18 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { FileSystemPort } from "./ProposedFileChange.js";
 
+const ADD_WORKSPACE_FOLDER_ACTION = "Add Folder to Workspace";
+
+class OutsideWorkspaceError extends Error {
+  constructor(
+    readonly rawPath: string,
+    readonly candidatePath: string,
+  ) {
+    super(`The requested file is outside the open workspace: ${rawPath}`);
+    this.name = "OutsideWorkspaceError";
+  }
+}
+
 export class VsCodeFileSystem implements FileSystemPort {
   private readonly decoder = new TextDecoder("utf-8", { fatal: true });
   private readonly encoder = new TextEncoder();
@@ -50,28 +62,90 @@ export class VsCodeFileSystem implements FileSystemPort {
     }
     const candidate = path.resolve(firstFolder.uri.fsPath, rawPath);
     for (const folder of folders) {
-      const relative = path.relative(folder.uri.fsPath, candidate);
-      if (
-        relative === "" ||
-        (!relative.startsWith(`..${path.sep}`) &&
-          relative !== ".." &&
-          !path.isAbsolute(relative))
-      ) {
-        const segments = relative
-          .split(path.sep)
-          .filter((segment) => segment.length > 0);
-        return vscode.Uri.joinPath(folder.uri, ...segments);
+      const resolved = resolveWithinRoot(folder.uri, candidate);
+      if (resolved !== undefined) {
+        return resolved;
       }
     }
-    throw new Error(
-      `The requested file is outside the open workspace: ${rawPath}`,
-    );
+    throw new OutsideWorkspaceError(rawPath, candidate);
+  }
+
+  async resolveOrRequestWorkspaceTarget(rawPath: string): Promise<vscode.Uri> {
+    try {
+      return this.resolveWorkspaceTarget(rawPath);
+    } catch (error) {
+      if (!(error instanceof OutsideWorkspaceError)) {
+        throw error;
+      }
+      const folderPath = path.dirname(error.candidatePath);
+      if (path.parse(folderPath).root === folderPath) {
+        throw new Error(
+          `Refusing to add a filesystem root for external edit access: ${folderPath}`,
+        );
+      }
+      const selected = await vscode.window.showWarningMessage(
+        `The requested file is outside the open workspace: ${error.rawPath}`,
+        {
+          modal: true,
+          detail:
+            `To edit this file with Changed Files review, Konnits Coder must add its parent folder to the workspace.\n\n` +
+            `${folderPath}\n\n` +
+            "The folder will be created if needed. No broader parent folder will be added.",
+        },
+        ADD_WORKSPACE_FOLDER_ACTION,
+      );
+      if (selected !== ADD_WORKSPACE_FOLDER_ACTION) {
+        throw new Error(
+          `The user declined to add the external folder to the workspace: ${folderPath}`,
+        );
+      }
+
+      const folderUri = vscode.Uri.file(folderPath);
+      await vscode.workspace.fs.createDirectory(folderUri);
+      const started = vscode.workspace.updateWorkspaceFolders(
+        vscode.workspace.workspaceFolders?.length ?? 0,
+        null,
+        { uri: folderUri },
+      );
+      if (!started) {
+        throw new Error(
+          `VS Code could not add the external folder to the workspace: ${folderPath}`,
+        );
+      }
+
+      const resolved = resolveWithinRoot(folderUri, error.candidatePath);
+      if (resolved === undefined) {
+        throw new Error(
+          `The external file is not contained by the approved folder: ${error.rawPath}`,
+        );
+      }
+      return resolved;
+    }
   }
 
   displayPath(uriValue: string): string {
     const uri = vscode.Uri.parse(uriValue, true);
     return vscode.workspace.asRelativePath(uri, false);
   }
+}
+
+function resolveWithinRoot(
+  root: vscode.Uri,
+  candidate: string,
+): vscode.Uri | undefined {
+  const relative = path.relative(root.fsPath, candidate);
+  if (
+    relative !== "" &&
+    (relative.startsWith(`..${path.sep}`) ||
+      relative === ".." ||
+      path.isAbsolute(relative))
+  ) {
+    return undefined;
+  }
+  const segments = relative
+    .split(path.sep)
+    .filter((segment) => segment.length > 0);
+  return vscode.Uri.joinPath(root, ...segments);
 }
 
 function isFileNotFound(error: unknown): boolean {
