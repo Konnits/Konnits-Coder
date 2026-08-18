@@ -96,6 +96,20 @@ describe("processing presentation", () => {
     expect(roots[0]?.children[0]?.item.id).toBe("child");
   });
 
+  it("keeps completed subagents open when they contain child activity", () => {
+    const agent: ToolTimelineItem = {
+      type: "tool",
+      id: "agent-completed",
+      kind: "subagent",
+      title: "Agent",
+      state: "succeeded",
+    };
+
+    expect(isActivityExpanded({}, agent, true)).toBe(true);
+    const collapsed = toggleActivityExpansion({}, agent, true);
+    expect(isActivityExpanded(collapsed, agent, true)).toBe(false);
+  });
+
   it("preserves independent nested activity expansion", () => {
     const first = tool("first");
     const second = tool("second");
@@ -128,6 +142,73 @@ describe("processing presentation", () => {
     ]);
     expect(turn.finalResponse?.text).toBe("# Final answer");
     expect(turn.finalResponse?.text).not.toContain("README.md");
+    expect(turn.segments).toMatchObject([
+      {
+        type: "assistant",
+        item: { id: "preamble", text: "I will inspect." },
+      },
+      {
+        type: "processing",
+        activities: [{ id: "tool-1" }],
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("cuts processing around each direct Qwen message", () => {
+    const timeline: TimelineItem[] = [
+      { type: "user", id: "user-1", text: "Analyze" },
+      tool("tool-1"),
+      assistant("message-1", "The first inspection is complete."),
+      tool("tool-2"),
+      assistant("message-2", "I found another issue."),
+      tool("tool-3"),
+    ];
+
+    const view = buildConversationView(timeline, "running");
+    const turn = view[0];
+    if (turn?.type !== "turn") throw new Error("Expected a turn");
+
+    expect(turn.segments.map((segment) => segment.type)).toEqual([
+      "processing",
+      "assistant",
+      "processing",
+      "assistant",
+      "processing",
+    ]);
+    expect(turn.segments.at(-1)).toMatchObject({
+      type: "processing",
+      status: "working",
+      activities: [{ id: "tool-3" }],
+    });
+  });
+
+  it("keeps active-turn user updates inside the same processing group", () => {
+    const timeline: TimelineItem[] = [
+      { type: "user", id: "user-1", text: "Implement the feature" },
+      tool("tool-1"),
+      {
+        type: "followUp",
+        id: "follow-up-1",
+        text: "Include keyboard navigation",
+      },
+      tool("tool-2"),
+      { type: "finalResponse", id: "final", text: "Done" },
+    ];
+
+    const view = buildConversationView(timeline, "completed");
+
+    expect(view).toHaveLength(1);
+    const turn = view[0];
+    expect(turn?.type).toBe("turn");
+    if (turn?.type !== "turn") {
+      throw new Error("Expected a turn view model.");
+    }
+    expect(turn.activities.map((item) => item.id)).toEqual([
+      "tool-1",
+      "follow-up-1",
+      "tool-2",
+    ]);
   });
 
   it("renders native command results as standalone Konnits entries", () => {

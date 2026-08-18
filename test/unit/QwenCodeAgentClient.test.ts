@@ -52,6 +52,54 @@ describe("QwenCodeAgentClient", () => {
     );
   });
 
+  it("streams follow-up messages into the active SDK query", async () => {
+    const requests: Parameters<QwenQueryFactory>[0][] = [];
+    let releaseQuery: (() => void) | undefined;
+    const queryGate = new Promise<void>((resolve) => {
+      releaseQuery = resolve;
+    });
+    const client = createClient(
+      vi.fn(((request) => {
+        requests.push(request);
+        return fakeQuery(async function* () {
+          await queryGate;
+          yield resultMessage("done");
+        });
+      }) as QwenQueryFactory),
+    );
+
+    const run = client.run(runRequest());
+    await expect(client.sendMessage("Queued immediately")).resolves.toBe(true);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const prompt = requests[0]?.prompt;
+    if (typeof prompt === "string" || prompt === undefined) {
+      throw new Error("Expected an active SDK user-message stream.");
+    }
+    const iterator = prompt[Symbol.asyncIterator]();
+    const initial = await iterator.next();
+    if (initial.done) {
+      throw new Error("Expected the initial prompt message.");
+    }
+    expect(initial.value.message.content).toBe("hello");
+
+    const queued = await iterator.next();
+    if (queued.done) {
+      throw new Error("Expected the queued prompt message.");
+    }
+    expect(queued.value.message.content).toBe("Queued immediately");
+
+    await expect(client.sendMessage("Change course")).resolves.toBe(true);
+    const followUp = await iterator.next();
+    if (followUp.done) {
+      throw new Error("Expected the active follow-up message.");
+    }
+    expect(followUp.value.message.content).toBe("Change course");
+
+    releaseQuery?.();
+    await run;
+    await expect(client.sendMessage("Too late")).resolves.toBe(false);
+  });
+
   it("enables partial messages without restricting Qwen's agent tool", async () => {
     const requests: Parameters<QwenQueryFactory>[0][] = [];
     const client = createClient(
@@ -66,6 +114,21 @@ describe("QwenCodeAgentClient", () => {
     expect(requests[0]?.options?.includePartialMessages).toBe(true);
     expect(requests[0]?.options?.coreTools).toBeUndefined();
     expect(requests[0]?.options?.excludeTools).toBeUndefined();
+  });
+
+  it("passes the safe plan permission mode to Qwen", async () => {
+    const requests: Parameters<QwenQueryFactory>[0][] = [];
+    const client = createClient(
+      vi.fn(((request) => {
+        requests.push(request);
+        return successfulQuery();
+      }) as QwenQueryFactory),
+      { permissionMode: "plan" },
+    );
+
+    await client.run(runRequest());
+
+    expect(requests[0]?.options?.permissionMode).toBe("plan");
   });
 
   it("denies image reads by default before Qwen can add them to the model input", async () => {
@@ -557,6 +620,7 @@ function createClient(
     readonly executablePath?: string;
     readonly allowImageInput?: boolean;
     readonly streamIdleTimeoutMs?: number;
+    readonly permissionMode?: "default" | "plan";
   } = {},
   subagentResolver?: QwenSubagentResolver,
 ): QwenCodeAgentClient {

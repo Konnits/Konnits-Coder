@@ -28,6 +28,12 @@ describe("configuration parsing", () => {
     expect(parseConfigurationValues("", false, false, 1)).toEqual({
       debug: false,
     });
+    expect(parseConfigurationValues("", false, false, 120_000, "plan")).toEqual(
+      { debug: false, permissionMode: "plan" },
+    );
+    expect(parseConfigurationValues("", false, false, 120_000, "yolo")).toEqual(
+      { debug: false },
+    );
   });
 });
 
@@ -43,6 +49,33 @@ describe("webview message validation", () => {
     expect(parseWebviewMessage({ type: "manageModels" })).toEqual({
       type: "manageModels",
     });
+    expect(parseWebviewMessage({ type: "retryPrompt", id: "user-1" })).toEqual({
+      type: "retryPrompt",
+      id: "user-1",
+    });
+    expect(
+      parseWebviewMessage({
+        type: "editPrompt",
+        id: "user-1",
+        prompt: "Edited prompt",
+      }),
+    ).toEqual({
+      type: "editPrompt",
+      id: "user-1",
+      prompt: "Edited prompt",
+    });
+    expect(
+      parseWebviewMessage({ type: "restorePromptFiles", id: "user-1" }),
+    ).toEqual({ type: "restorePromptFiles", id: "user-1" });
+    expect(
+      parseWebviewMessage({
+        type: "saveClipboardImage",
+        requestId: "attachment-1",
+        name: "capture.png",
+        mimeType: "image/png",
+        data: "AA==",
+      }),
+    ).toMatchObject({ type: "saveClipboardImage", requestId: "attachment-1" });
     expect(
       parseWebviewMessage({
         type: "openExternal",

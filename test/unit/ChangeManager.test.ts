@@ -150,4 +150,80 @@ describe("ChangeManager", () => {
         .sort(),
     ).toEqual(["conflicted", "rejected"]);
   });
+
+  it("restores every tracked file to its state before a prompt", async () => {
+    const fileSystem = new MemoryFileSystem();
+    fileSystem.files.set("file:///a.ts", "base");
+    const manager = new ChangeManager(fileSystem);
+    await manager.begin("file:///a.ts");
+    fileSystem.files.set("file:///a.ts", "first turn");
+    await manager.complete("file:///a.ts");
+    await manager.captureCheckpoint("prompt-2");
+
+    await manager.begin("file:///a.ts");
+    await manager.begin("file:///new.ts");
+    fileSystem.files.set("file:///a.ts", "second turn");
+    fileSystem.files.set("file:///new.ts", "created later");
+    await manager.completeAll();
+
+    expect(manager.hasChangesSinceCheckpoint("prompt-2")).toBe(true);
+    await manager.restoreCheckpoint("prompt-2");
+
+    expect(fileSystem.files.get("file:///a.ts")).toBe("first turn");
+    expect(fileSystem.files.has("file:///new.ts")).toBe(false);
+    expect(manager.list()).toHaveLength(1);
+    expect(manager.hasChangesSinceCheckpoint("prompt-2")).toBe(false);
+  });
+
+  it("refuses checkpoint restoration when a tracked file changed manually", async () => {
+    const fileSystem = new MemoryFileSystem();
+    fileSystem.files.set("file:///a.ts", "base");
+    const manager = new ChangeManager(fileSystem);
+    await manager.captureCheckpoint("prompt-1");
+    await manager.begin("file:///a.ts");
+    fileSystem.files.set("file:///a.ts", "agent");
+    await manager.complete("file:///a.ts");
+    fileSystem.files.set("file:///a.ts", "manual");
+
+    await expect(manager.restoreCheckpoint("prompt-1")).rejects.toThrow(
+      "independent changes",
+    );
+    expect(fileSystem.files.get("file:///a.ts")).toBe("manual");
+    expect(manager.list()[0]?.status).toBe("conflicted");
+  });
+
+  it("restores checkpoint metadata after an accepted later change", async () => {
+    const fileSystem = new MemoryFileSystem();
+    fileSystem.files.set("file:///a.ts", "base");
+    const manager = new ChangeManager(fileSystem);
+    await manager.captureCheckpoint("prompt-1");
+    await manager.begin("file:///a.ts");
+    fileSystem.files.set("file:///a.ts", "accepted agent change");
+    const change = await manager.complete("file:///a.ts");
+    await manager.accept(change!.id);
+
+    await manager.restoreCheckpoint("prompt-1");
+
+    expect(fileSystem.files.get("file:///a.ts")).toBe("base");
+    expect(manager.list()).toEqual([]);
+  });
+
+  it("does not overwrite an independently recreated file when moving forward to a checkpoint", async () => {
+    const fileSystem = new MemoryFileSystem();
+    const manager = new ChangeManager(fileSystem);
+    await manager.captureCheckpoint("before-create");
+    await manager.begin("file:///new.ts");
+    fileSystem.files.set("file:///new.ts", "agent-created");
+    await manager.complete("file:///new.ts");
+    await manager.captureCheckpoint("after-create");
+    await manager.restoreCheckpoint("before-create");
+    fileSystem.files.set("file:///new.ts", "independent-user-file");
+
+    await expect(manager.restoreCheckpoint("after-create")).rejects.toThrow(
+      "independent changes",
+    );
+    expect(fileSystem.files.get("file:///new.ts")).toBe(
+      "independent-user-file",
+    );
+  });
 });

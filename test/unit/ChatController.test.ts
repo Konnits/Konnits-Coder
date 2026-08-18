@@ -8,6 +8,7 @@ import type {
 import type { AgentEvent } from "../../src/agent/AgentEvent.js";
 import type { TokenCounter } from "../../src/agent/TokenUsage.js";
 import type { ChangeManager } from "../../src/changes/ChangeManager.js";
+import type { ProposedFileChange } from "../../src/changes/ProposedFileChange.js";
 import type { DiffContentProvider } from "../../src/changes/DiffContentProvider.js";
 import type { VsCodeFileSystem } from "../../src/changes/VsCodeFileSystem.js";
 import type { Logger } from "../../src/logging/Logger.js";
@@ -25,6 +26,8 @@ import type {
   ChatReference,
   TimelineItem,
 } from "../../src/webview/messages.js";
+import type { ChatAttachmentAuthorization } from "../../src/chat/ChatAttachmentService.js";
+import type { SessionRewind } from "../../src/qwen/QwenSessionRewindService.js";
 
 vi.mock("vscode", () => ({
   workspace: {
@@ -38,6 +41,7 @@ vi.mock("vscode", () => ({
     }),
   },
   env: { openExternal: vi.fn(async () => true) },
+  commands: { executeCommand: vi.fn(async () => undefined) },
   window: {
     createQuickPick: vi.fn(),
     showErrorMessage: vi.fn(async () => undefined),
@@ -363,6 +367,77 @@ describe("ChatController terminal states", () => {
     expect(controller.getState().contextUsage).toBeUndefined();
   });
 
+  it("publishes root todo updates and clears them with the session", async () => {
+    const { controller, agent } = await createController();
+    agent.emit(startedEvent());
+    agent.emit({
+      type: "todos.updated",
+      todos: [
+        { id: "one", content: "Inspect", status: "completed" },
+        { id: "two", content: "Implement", status: "in_progress" },
+      ],
+      timestamp: Date.now(),
+    });
+    agent.emit({
+      type: "todos.updated",
+      todos: [{ id: "nested", content: "Nested work", status: "pending" }],
+      parentId: "subagent-1",
+      timestamp: Date.now(),
+    });
+
+    expect(controller.getState().todos).toEqual([
+      { id: "one", content: "Inspect", status: "completed" },
+      { id: "two", content: "Implement", status: "in_progress" },
+    ]);
+
+    agent.emit({
+      type: "agent.cancelled",
+      runId: "run-1",
+      timestamp: Date.now(),
+    });
+    await controller.newSession();
+
+    expect(controller.getState().todos).toEqual([]);
+  });
+
+  it("derives added, modified, and deleted badges from captured file existence", async () => {
+    const now = Date.now();
+    const proposal = (
+      id: string,
+      originalContent: string | null,
+      proposedContent: string | null,
+    ): ProposedFileChange => ({
+      id,
+      uri: `C:\\workspace\\${id}.ts`,
+      originalContent,
+      proposedContent,
+      originalHash: null,
+      proposedHash: null,
+      status: "pending",
+      additions: 1,
+      deletions: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const { controller } = await createController(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [
+        proposal("added", null, "new"),
+        proposal("modified", "old", "new"),
+        proposal("deleted", "old", null),
+      ],
+    );
+
+    expect(controller.getState().changes.map((change) => change.kind)).toEqual([
+      "added",
+      "modified",
+      "deleted",
+    ]);
+  });
+
   it("adds estimated visible-message counts without failing on counter errors", async () => {
     const working = await createController({
       count: () => ({ tokens: 18, accuracy: "estimated" }),
@@ -417,6 +492,306 @@ describe("ChatController terminal states", () => {
         references: [reference],
       }),
     );
+  });
+
+  it("queues a visible follow-up message while Qwen is working", async () => {
+    const { controller, agent } = await createController();
+    agent.emit(startedEvent());
+
+    controller.handleMessage({
+      type: "sendPrompt",
+      prompt: "Prioriza las pruebas de integración",
+    });
+
+    await vi.waitFor(() =>
+      expect(agent.sentMessages).toEqual([
+        "Prioriza las pruebas de integración",
+      ]),
+    );
+    expect(agent.lastRequest).toBeUndefined();
+    expect(controller.getState().status).toBe("running");
+    expect(controller.getState().timeline).toContainEqual(
+      expect.objectContaining({
+        type: "followUp",
+        text: "Prioriza las pruebas de integración",
+      }),
+    );
+  });
+
+  it("retries a previous prompt as a new turn", async () => {
+    const { controller, agent } = await createController();
+    controller.handleMessage({ type: "sendPrompt", prompt: "Run checks" });
+    await vi.waitFor(() => expect(agent.lastRequest).toBeDefined());
+    const original = controller
+      .getState()
+      .timeline.find((item) => item.type === "user");
+    if (original?.type !== "user") {
+      throw new Error("Expected the original user prompt.");
+    }
+    agent.emit(startedEvent());
+    agent.emit({
+      type: "agent.completed",
+      runId: "run-1",
+      result: "done",
+      timestamp: Date.now(),
+    });
+    agent.lastRequest = undefined;
+
+    controller.handleMessage({ type: "retryPrompt", id: original.id });
+
+    await vi.waitFor(() =>
+      expect(agent.lastRequest?.prompt).toBe("Run checks"),
+    );
+    expect(
+      controller
+        .getState()
+        .timeline.filter((item) => item.type === "user")
+        .map((item) => item.text),
+    ).toEqual(["Run checks", "Run checks"]);
+  });
+
+  it("rewinds Qwen, restores files, and removes later turns when editing a prompt", async () => {
+    const rewindCall = vi.fn(async () => undefined);
+    const rewind: SessionRewind = { rewind: rewindCall };
+    const working = await createController(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      rewind,
+    );
+    working.controller.handleMessage({
+      type: "sendPrompt",
+      prompt: "Original request",
+    });
+    await vi.waitFor(() => expect(working.agent.lastRequest).toBeDefined());
+    const original = working.controller
+      .getState()
+      .timeline.find((item) => item.type === "user");
+    if (original?.type !== "user") throw new Error("Expected user prompt");
+    working.agent.emit(startedEvent());
+    working.agent.emit({
+      type: "agent.completed",
+      runId: "run-1",
+      result: "first done",
+      timestamp: Date.now(),
+    });
+    working.agent.lastRequest = undefined;
+    working.controller.handleMessage({
+      type: "sendPrompt",
+      prompt: "Later request",
+    });
+    await vi.waitFor(() => expect(working.agent.lastRequest).toBeDefined());
+    working.agent.emit(startedEvent());
+    working.agent.emit({
+      type: "agent.completed",
+      runId: "run-2",
+      result: "second done",
+      timestamp: Date.now(),
+    });
+    working.agent.lastRequest = undefined;
+    working.controller.handleMessage({
+      type: "editPrompt",
+      id: original.id,
+      prompt: "Edited request",
+    });
+
+    await vi.waitFor(() =>
+      expect(working.agent.lastRequest?.prompt).toBe("Edited request"),
+    );
+    expect(rewindCall).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      workspacePath: "C:\\workspace",
+      targetTurnIndex: 0,
+    });
+    expect(working.changeSpies.restoreCheckpoint).toHaveBeenCalledWith(
+      original.id,
+    );
+    expect(
+      working.controller
+        .getState()
+        .timeline.filter((item) => item.type === "user")
+        .map((item) => item.text),
+    ).toEqual(["Edited request"]);
+  });
+
+  it("restores prompt files without changing conversation history", async () => {
+    const vscode = await import("vscode");
+    const working = await createController();
+    working.controller.handleMessage({ type: "sendPrompt", prompt: "Change" });
+    await vi.waitFor(() => expect(working.agent.lastRequest).toBeDefined());
+    const user = working.controller
+      .getState()
+      .timeline.find((item) => item.type === "user");
+    if (user?.type !== "user") throw new Error("Expected user prompt");
+    working.changeSpies.hasChangesSinceCheckpoint.mockReturnValue(true);
+    vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce(
+      "Restore files" as never,
+    );
+
+    working.controller.handleMessage({
+      type: "restorePromptFiles",
+      id: user.id,
+    });
+
+    await vi.waitFor(() =>
+      expect(working.changeSpies.restoreCheckpoint).toHaveBeenCalledWith(
+        user.id,
+      ),
+    );
+    expect(
+      working.controller
+        .getState()
+        .timeline.filter((item) => item.type === "user"),
+    ).toHaveLength(1);
+  });
+
+  it("returns files to their newer state when Qwen conversation rewind fails", async () => {
+    const vscode = await import("vscode");
+    const rewind: SessionRewind = {
+      rewind: vi.fn(async () => {
+        throw new Error("snapshot compacted");
+      }),
+    };
+    const working = await createController(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      rewind,
+    );
+    working.controller.handleMessage({
+      type: "sendPrompt",
+      prompt: "Original",
+    });
+    await vi.waitFor(() => expect(working.agent.lastRequest).toBeDefined());
+    const user = working.controller
+      .getState()
+      .timeline.find((item) => item.type === "user");
+    if (user?.type !== "user") throw new Error("Expected user prompt");
+    working.agent.emit(startedEvent());
+    working.agent.emit({
+      type: "agent.completed",
+      runId: "run-1",
+      result: "done",
+      timestamp: Date.now(),
+    });
+
+    working.controller.handleMessage({
+      type: "editPrompt",
+      id: user.id,
+      prompt: "Edited",
+    });
+
+    await vi.waitFor(() =>
+      expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+        "snapshot compacted",
+      ),
+    );
+    const restoredIds = working.changeSpies.restoreCheckpoint.mock.calls.map(
+      ([checkpointId]) => checkpointId,
+    );
+    expect(restoredIds[0]).toBe(user.id);
+    expect(restoredIds[1]).toMatch(/^edit-rollback:/u);
+    expect(
+      working.controller
+        .getState()
+        .timeline.filter((item) => item.type === "user"),
+    ).toHaveLength(1);
+  });
+
+  it("opens the scoped agent permission setting", async () => {
+    const vscode = await import("vscode");
+    const { controller } = await createController();
+
+    controller.handleMessage({ type: "openPermissionSettings" });
+
+    await vi.waitFor(() =>
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+        "workbench.action.openSettings",
+        "@ext:Konnits.konnits-coder qwenFrontend.qwen.permissionMode",
+      ),
+    );
+  });
+
+  it("adds the controlled attachment directory to the Qwen workspace context", async () => {
+    const attachment: ChatReference = {
+      id: "file:///C:/attachments/image.png",
+      kind: "file",
+      workspaceFolderUri: "file:///C:/attachments",
+      uri: "file:///C:/attachments/image.png",
+      relativePath: "image.png",
+      displayName: "image.png",
+      source: "attachment",
+    };
+    const authorization: ChatAttachmentAuthorization = {
+      isManaged: () => true,
+      additionalWorkspacePaths: () => ["C:\\attachments"],
+    };
+    const { controller, agent } = await createController(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      authorization,
+    );
+
+    controller.handleMessage({
+      type: "sendPrompt",
+      prompt: "Describe this image",
+      references: [attachment],
+    });
+
+    await vi.waitFor(() => expect(agent.lastRequest).toBeDefined());
+    expect(agent.lastRequest?.workspacePaths).toEqual([
+      "C:\\workspace",
+      "C:\\attachments",
+    ]);
+    expect(agent.lastRequest?.prompt).toContain("image.png");
+  });
+
+  it("rejects attachment references that were not issued by the attachment service", async () => {
+    const forgedAttachment: ChatReference = {
+      id: "file:///C:/outside/secret.txt",
+      kind: "file",
+      workspaceFolderUri: "file:///C:/outside",
+      uri: "file:///C:/outside/secret.txt",
+      relativePath: "secret.txt",
+      displayName: "secret.txt",
+      source: "attachment",
+    };
+    const authorization: ChatAttachmentAuthorization = {
+      isManaged: () => false,
+      additionalWorkspacePaths: () => [],
+    };
+    const { controller, agent } = await createController(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      authorization,
+    );
+
+    controller.handleMessage({
+      type: "sendPrompt",
+      prompt: "Read this",
+      references: [forgedAttachment],
+    });
+
+    await vi.waitFor(() =>
+      expect(controller.getState().timeline.at(-1)).toMatchObject({
+        type: "error",
+        message: "That attachment is no longer available.",
+      }),
+    );
+    expect(agent.lastRequest).toBeUndefined();
+    expect(controller.getState().status).toBe("idle");
   });
 
   it("routes native, unavailable, and unknown commands locally before any Qwen turn", async () => {
@@ -702,6 +1077,9 @@ async function createController(
   models?: ModelManagement,
   history?: QwenSessionHistoryService,
   commands?: KonnitsCommandRouter,
+  proposedChanges: readonly ProposedFileChange[] = [],
+  attachments?: ChatAttachmentAuthorization,
+  sessionRewind?: SessionRewind,
 ) {
   const { ChatController } = await import("../../src/chat/ChatController.js");
   const agent = new FakeAgentClient();
@@ -711,6 +1089,28 @@ async function createController(
     session: { id: sessionId },
     resume: true,
   }));
+  const checkpointIds = new Set<string>();
+  const restoreCheckpoint = vi.fn(async (id: string) => {
+    void id;
+  });
+  const hasChangesSinceCheckpoint = vi.fn(() => false);
+  const changeManager = {
+    onDidChange: disposable,
+    list: () => proposedChanges,
+    denyAll: () => undefined,
+    clearSettled: () => undefined,
+    captureCheckpoint: vi.fn(async (id: string) => {
+      checkpointIds.add(id);
+    }),
+    hasCheckpoint: vi.fn((id: string) => checkpointIds.has(id)),
+    hasChangesSinceCheckpoint,
+    assertCheckpointRestorable: vi.fn(async () => undefined),
+    restoreCheckpoint,
+    discardCheckpoints: vi.fn((ids: readonly string[]) => {
+      for (const id of ids) checkpointIds.delete(id);
+    }),
+    clearCheckpoints: vi.fn(() => checkpointIds.clear()),
+  } as unknown as ChangeManager;
   const sessions = {
     create: async () => ({ id: "session-2" }),
     getOrCreate: async () => ({
@@ -729,11 +1129,7 @@ async function createController(
       list: () => [],
       denyAll: () => undefined,
     } as unknown as PermissionManager,
-    {
-      onDidChange: disposable,
-      list: () => [],
-      clearSettled: () => undefined,
-    } as unknown as ChangeManager,
+    changeManager,
     { displayPath: (uri: string) => uri } as unknown as VsCodeFileSystem,
     {} as DiffContentProvider,
     { debug: vi.fn(), error: vi.fn() } as unknown as Logger,
@@ -741,6 +1137,8 @@ async function createController(
     models,
     history,
     commands,
+    attachments,
+    sessionRewind,
   );
   return {
     controller,
@@ -748,6 +1146,7 @@ async function createController(
     sessions,
     markEstablished,
     resumeExisting,
+    changeSpies: { restoreCheckpoint, hasChangesSinceCheckpoint },
   };
 }
 
@@ -965,6 +1364,7 @@ class FakeAgentClient implements AgentClient {
   lastRequest: AgentRunRequest | undefined;
   restoreRequest: AgentSessionRestoreRequest | undefined;
   restoreResult: AgentSessionRestoreResult = {};
+  readonly sentMessages: string[] = [];
 
   connect(): Promise<void> {
     return Promise.resolve();
@@ -973,6 +1373,11 @@ class FakeAgentClient implements AgentClient {
   run(request: AgentRunRequest): Promise<void> {
     this.lastRequest = request;
     return Promise.resolve();
+  }
+
+  sendMessage(message: string): Promise<boolean> {
+    this.sentMessages.push(message);
+    return Promise.resolve(true);
   }
 
   restoreSession(

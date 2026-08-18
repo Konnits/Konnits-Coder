@@ -136,6 +136,50 @@ describe("QwenEventAdapter", () => {
     ).toMatchObject({ text: "Final text" });
   });
 
+  it("preserves subagent ownership for streamed thinking", () => {
+    const adapter = new QwenEventAdapter();
+    const events = [
+      adapter.adapt(
+        partial(
+          {
+            type: "message_start",
+            message: { id: "child-message", role: "assistant", model: "qwen" },
+          },
+          "agent-1",
+        ),
+      ),
+      adapter.adapt(
+        partial(
+          {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "thinking", thinking: "Inspecting" },
+          },
+          "agent-1",
+        ),
+      ),
+      adapter.adapt(
+        partial({ type: "content_block_stop", index: 0 }, "agent-1"),
+      ),
+      adapter.adapt(partial({ type: "message_stop" }, "agent-1")),
+    ].flat();
+
+    expect(events.map((event) => event.type)).toEqual([
+      "thinking.started",
+      "thinking.chunk",
+      "thinking.completed",
+    ]);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "thinking.chunk",
+          parentId: "agent-1",
+          text: "Inspecting",
+        }),
+      ]),
+    );
+  });
+
   it("normalizes edit tool start and completion", () => {
     const adapter = new QwenEventAdapter();
     const started = adapter.adapt(
@@ -216,6 +260,59 @@ describe("QwenEventAdapter", () => {
     });
   });
 
+  it("publishes validated todo state without exposing raw tool input", () => {
+    const events = new QwenEventAdapter().adapt(
+      assistant([
+        {
+          type: "tool_use",
+          id: "todo-1",
+          name: "todo_write",
+          input: {
+            todos: [
+              { id: "inspect", content: "Inspect the UI", status: "completed" },
+              {
+                id: "build",
+                content: "Build the panel",
+                status: "in_progress",
+              },
+            ],
+          },
+        },
+      ]),
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "tool.started",
+      "todos.updated",
+    ]);
+    expect(events[1]).toEqual(
+      expect.objectContaining({
+        type: "todos.updated",
+        todos: [
+          { id: "inspect", content: "Inspect the UI", status: "completed" },
+          { id: "build", content: "Build the panel", status: "in_progress" },
+        ],
+      }),
+    );
+  });
+
+  it("ignores malformed todo state while retaining the tool activity", () => {
+    const events = new QwenEventAdapter().adapt(
+      assistant([
+        {
+          type: "tool_use",
+          id: "todo-invalid",
+          name: "todo_write",
+          input: {
+            todos: [{ id: "missing-status", content: "Invalid item" }],
+          },
+        },
+      ]),
+    );
+
+    expect(events.map((event) => event.type)).toEqual(["tool.started"]);
+  });
+
   it("maps Qwen agent calls and preserves child parent IDs", () => {
     const adapter = new QwenEventAdapter();
     const [agent] = adapter.adapt(
@@ -262,12 +359,15 @@ describe("QwenEventAdapter", () => {
   });
 });
 
-function partial(event: unknown): SDKMessage {
+function partial(
+  event: unknown,
+  parentToolUseId: string | null = null,
+): SDKMessage {
   return {
     type: "stream_event",
     uuid: `stream-envelope-${String((partialSequence += 1))}`,
     session_id: "session-1",
-    parent_tool_use_id: null,
+    parent_tool_use_id: parentToolUseId,
     event,
   } as SDKMessage;
 }

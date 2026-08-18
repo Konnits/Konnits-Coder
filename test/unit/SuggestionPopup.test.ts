@@ -1,7 +1,10 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { SuggestionPopup } from "../../webview/src/SuggestionPopup.js";
+import {
+  scrollSuggestionIntoView,
+  SuggestionPopup,
+} from "../../webview/src/SuggestionPopup.js";
 
 describe("SuggestionPopup", () => {
   it("renders structured command metadata without dropping long descriptions", () => {
@@ -9,6 +12,7 @@ describe("SuggestionPopup", () => {
       "A deliberately long command description that may wrap at narrow sidebar widths while remaining available to the browser layout.";
     const html = renderToStaticMarkup(
       createElement(SuggestionPopup, {
+        id: "suggestions",
         kind: "command",
         commands: [
           {
@@ -38,5 +42,16 @@ describe("SuggestionPopup", () => {
     expect(html).toContain("Aliases: /jobs");
     expect(html).toContain("Qwen");
     expect(html).toContain("suggestion-selected");
+    expect(html).toContain('id="suggestions-option-0"');
+  });
+
+  it("scrolls the keyboard-highlighted option into the visible popup area", () => {
+    const scrollIntoView = vi.fn();
+    const querySelector = vi.fn(() => ({ scrollIntoView }));
+
+    scrollSuggestionIntoView({ querySelector } as unknown as HTMLElement, 7);
+
+    expect(querySelector).toHaveBeenCalledWith('[data-suggestion-index="7"]');
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
   });
 });
