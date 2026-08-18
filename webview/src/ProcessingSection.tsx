@@ -79,11 +79,11 @@ export function ProcessingSection({
             key={`${node.item.type}-${node.item.id}`}
             node={node}
             expansion={itemExpansion}
-            workspacePath={workspacePath}
+            {...(workspacePath === undefined ? {} : { workspacePath })}
             onOpenLink={onOpenLink}
-            onToggle={(item) =>
+            onToggle={(item, hasChildren) =>
               setItemExpansion((current) =>
-                toggleActivityExpansion(current, item),
+                toggleActivityExpansion(current, item, hasChildren),
               )
             }
           />

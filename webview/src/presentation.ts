@@ -3,6 +3,7 @@ import type {
   ErrorTimelineItem,
   ExecutionStatus,
   FinalResponseTimelineItem,
+  FollowUpTimelineItem,
   ThinkingTimelineItem,
   TimelineItem,
   TurnUsageTimelineItem,
@@ -12,6 +13,7 @@ import type {
 
 export type ProcessingActivity =
   | AssistantTimelineItem
+  | FollowUpTimelineItem
   | ThinkingTimelineItem
   | ToolTimelineItem;
 export type ProcessingStatus =
@@ -27,11 +29,27 @@ export interface AgentTurnViewModel {
   readonly id: string;
   readonly user: UserTimelineItem;
   readonly activities: readonly ProcessingActivity[];
+  readonly segments: readonly TurnContentSegment[];
   readonly finalResponse?: FinalResponseTimelineItem;
   readonly turnUsage?: TurnUsageTimelineItem;
   readonly errors: readonly ErrorTimelineItem[];
   readonly status: ProcessingStatus;
 }
+
+export interface ProcessingTurnSegment {
+  readonly type: "processing";
+  readonly id: string;
+  readonly activities: readonly ProcessingActivity[];
+  readonly status: ProcessingStatus;
+}
+
+export interface AssistantTurnSegment {
+  readonly type: "assistant";
+  readonly id: string;
+  readonly item: AssistantTimelineItem;
+}
+
+export type TurnContentSegment = ProcessingTurnSegment | AssistantTurnSegment;
 
 export interface StandaloneTimelineViewModel {
   readonly type: "standalone";
@@ -98,6 +116,7 @@ export function buildConversationView(
     }
     if (
       item.type === "assistant" ||
+      item.type === "followUp" ||
       item.type === "thinking" ||
       item.type === "tool"
     ) {
@@ -112,17 +131,63 @@ export function buildConversationView(
   }
 
   const lastTurnIndex = findLastTurnIndex(entries);
-  return entries.map((entry, index) =>
-    entry.type === "standalone"
-      ? entry
-      : {
-          ...entry,
-          status:
-            index === lastTurnIndex
-              ? processingStatus(executionStatus, entry)
-              : inferredTerminalStatus(entry),
-        },
-  );
+  return entries.map((entry, index) => {
+    if (entry.type === "standalone") {
+      return entry;
+    }
+    const status =
+      index === lastTurnIndex
+        ? processingStatus(executionStatus, entry)
+        : inferredTerminalStatus(entry);
+    return {
+      ...entry,
+      status,
+      segments: buildTurnSegments(entry.id, entry.activities, status),
+    };
+  });
+}
+
+export function buildTurnSegments(
+  turnId: string,
+  activities: readonly ProcessingActivity[],
+  status: ProcessingStatus,
+): readonly TurnContentSegment[] {
+  const segments: TurnContentSegment[] = [];
+  let processing: ProcessingActivity[] = [];
+  let processingIndex = 0;
+  const flushProcessing = (segmentStatus: ProcessingStatus): void => {
+    if (processing.length === 0) return;
+    segments.push({
+      type: "processing",
+      id: `${turnId}-processing-${String(processingIndex)}`,
+      activities: processing,
+      status: segmentStatus,
+    });
+    processing = [];
+    processingIndex += 1;
+  };
+
+  for (const activity of activities) {
+    if (activity.type === "assistant" && activity.parentId === undefined) {
+      flushProcessing("completed");
+      segments.push({ type: "assistant", id: activity.id, item: activity });
+    } else {
+      processing.push(activity);
+    }
+  }
+  flushProcessing(status);
+  if (
+    segments.length === 0 &&
+    (status === "working" || status === "waiting" || status === "cancelling")
+  ) {
+    segments.push({
+      type: "processing",
+      id: `${turnId}-processing-0`,
+      activities: [],
+      status,
+    });
+  }
+  return segments;
 }
 
 export function processingSummary(
@@ -138,6 +203,9 @@ export function activitySummary(
   item: ProcessingActivity,
   workspacePath: string | undefined,
 ): string | undefined {
+  if (item.type === "followUp") {
+    return truncate(item.text.replace(/\s+/gu, " ").trim(), 90);
+  }
   if (item.type === "assistant") {
     return truncate(item.text.replace(/\s+/gu, " ").trim(), 90);
   }
@@ -218,10 +286,15 @@ export function setProcessingExpanded(
 export function isActivityExpanded(
   state: ActivityExpansionState,
   item: ProcessingActivity,
+  hasChildren = false,
 ): boolean {
   return (
     state[item.id] ??
-    (item.type === "tool" ? item.state === "running" : !item.complete)
+    (item.type === "tool"
+      ? item.state === "running" || (item.kind === "subagent" && hasChildren)
+      : item.type === "followUp"
+        ? false
+        : !item.complete)
   );
 }
 
@@ -274,8 +347,12 @@ function formatDuration(durationMs: number): string {
 export function toggleActivityExpansion(
   state: ActivityExpansionState,
   item: ProcessingActivity,
+  hasChildren = false,
 ): ActivityExpansionState {
-  return { ...state, [item.id]: !isActivityExpanded(state, item) };
+  return {
+    ...state,
+    [item.id]: !isActivityExpanded(state, item, hasChildren),
+  };
 }
 
 export function processingStatusLabel(status: ProcessingStatus): string {
@@ -307,6 +384,8 @@ function processingStatus(
       return "waiting";
     case "cancelling":
       return "cancelling";
+    case "restoring":
+      return inferredTerminalStatus(turn);
     case "failed":
       return "failed";
     case "completed":

@@ -16,6 +16,7 @@ export class Configuration {
         "qwen.streamIdleTimeoutMs",
         DEFAULT_QWEN_STREAM_IDLE_TIMEOUT_MS,
       ),
+      configuration.get<string>("qwen.permissionMode", "default"),
     );
   }
 }

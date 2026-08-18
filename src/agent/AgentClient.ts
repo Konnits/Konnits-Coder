@@ -25,6 +25,8 @@ export interface AgentSessionRestoreResult {
 export interface AgentClient {
   connect(): Promise<void>;
   run(request: AgentRunRequest): Promise<void>;
+  /** Queue a user message on the currently running SDK query. */
+  sendMessage(message: string): Promise<boolean>;
   /** Reattach to a persisted session without sending a model prompt. */
   restoreSession?(
     request: AgentSessionRestoreRequest,

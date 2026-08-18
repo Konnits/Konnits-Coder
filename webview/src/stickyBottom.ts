@@ -50,11 +50,11 @@ export function useStickyBottom(
   contentVersion: string,
   contextKey: string,
 ): {
-  readonly contentRef: React.RefObject<HTMLElement | null>;
+  readonly contentRef: React.RefObject<HTMLDivElement | null>;
   readonly following: boolean;
   readonly jumpToLatest: () => void;
 } {
-  const contentRef = useRef<HTMLElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef(new StickyBottomController());
   const frameRef = useRef<number | undefined>(undefined);
   const [following, setFollowing] = useState(true);

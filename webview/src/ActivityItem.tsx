@@ -13,7 +13,7 @@ interface ActivityItemProps {
   readonly node: ProcessingActivityNode;
   readonly expansion: ActivityExpansionState;
   readonly workspacePath?: string;
-  readonly onToggle: (item: ProcessingActivity) => void;
+  readonly onToggle: (item: ProcessingActivity, hasChildren: boolean) => void;
   readonly onOpenLink: (href: string) => void;
 }
 
@@ -25,15 +25,18 @@ export function ActivityItem({
   onOpenLink,
 }: ActivityItemProps): React.JSX.Element {
   const { item } = node;
-  const expanded = isActivityExpanded(expansion, item);
+  const hasChildren = node.children.length > 0;
+  const expanded = isActivityExpanded(expansion, item, hasChildren);
   const now = useCurrentTime(item.type === "thinking" && !item.complete);
   const detailsRef = useRef<HTMLDivElement>(null);
   const title =
-    item.type === "assistant"
-      ? "Qwen"
-      : item.type === "thinking"
-        ? thoughtTitle(item, now)
-        : item.title;
+    item.type === "followUp"
+      ? "You"
+      : item.type === "assistant"
+        ? "Qwen"
+        : item.type === "thinking"
+          ? thoughtTitle(item, now)
+          : item.title;
   const summary =
     item.type === "thinking" ? undefined : activitySummary(item, workspacePath);
   const state = activityState(item);
@@ -58,13 +61,13 @@ export function ActivityItem({
         type="button"
         aria-expanded={expanded}
         aria-label={`${expanded ? "Collapse" : "Expand"} ${title}${summary === undefined ? "" : ` ${summary}`} activity`}
-        onClick={() => onToggle(item)}
+        onClick={() => onToggle(item, hasChildren)}
       >
         <span className="disclosure" aria-hidden="true">
           {expanded ? "▾" : "▸"}
         </span>
         <span className="activity-state-icon" aria-hidden="true">
-          {activityIcon(state)}
+          {item.type === "followUp" ? "↳" : activityIcon(state)}
         </span>
         <strong>{title}</strong>
         {summary !== undefined && (
@@ -76,7 +79,23 @@ export function ActivityItem({
         className={`activity-details${item.type === "thinking" ? " thought-details" : ""}`}
         hidden={!expanded}
       >
-        {item.type === "assistant" || item.type === "thinking" ? (
+        {item.type === "followUp" ? (
+          <>
+            <p className="follow-up-text">{item.text}</p>
+            {item.references !== undefined && item.references.length > 0 && (
+              <div className="message-references" aria-label="Referenced files">
+                {item.references.map((reference) => (
+                  <span className="message-reference" key={reference.id}>
+                    <span aria-hidden="true">
+                      {reference.source === "attachment" ? "📎" : "@"}
+                    </span>{" "}
+                    {reference.displayName}
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
+        ) : item.type === "assistant" || item.type === "thinking" ? (
           <MarkdownMessage
             source={item.text || (item.type === "thinking" ? "Thinking…" : "")}
             onOpenLink={onOpenLink}
@@ -117,6 +136,9 @@ export function ActivityItem({
 type ActivityState = "running" | "completed" | "failed" | "cancelled";
 
 function activityState(item: ProcessingActivity): ActivityState {
+  if (item.type === "followUp") {
+    return "completed";
+  }
   if (item.type === "assistant" || item.type === "thinking") {
     return item.cancelled === true
       ? "cancelled"

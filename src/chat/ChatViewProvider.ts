@@ -4,11 +4,14 @@ import type { ChatController } from "./ChatController.js";
 import type { SlashCommandRegistry } from "../commands/SlashCommandRegistry.js";
 import type {
   ExtensionToWebviewMessage,
+  AttachmentSelectionMessage,
   SlashCommandsMessage,
   WorkspaceReferencesMessage,
+  WebviewToExtensionMessage,
 } from "../webview/messages.js";
 import { parseWebviewMessage } from "../webview/messages.js";
 import type { WorkspaceReferenceService } from "./WorkspaceReferenceService.js";
+import type { ChatAttachmentService } from "./ChatAttachmentService.js";
 
 export class ChatViewProvider
   implements vscode.WebviewViewProvider, vscode.Disposable
@@ -22,6 +25,7 @@ export class ChatViewProvider
     private readonly controller: ChatController,
     private readonly commands: SlashCommandRegistry,
     private readonly references: WorkspaceReferenceService,
+    private readonly attachments: ChatAttachmentService,
   ) {
     this.stateSubscription = controller.onDidChange(() => {
       void this.postState();
@@ -47,6 +51,10 @@ export class ChatViewProvider
         void this.postSlashCommands();
       } else if (parsed.type === "searchWorkspaceReferences") {
         void this.postWorkspaceReferences(parsed.requestId, parsed.query);
+      } else if (parsed.type === "pickAttachments") {
+        void this.pickAttachments(parsed.requestId);
+      } else if (parsed.type === "saveClipboardImage") {
+        void this.saveClipboardImage(parsed);
       } else {
         this.controller.handleMessage(parsed);
       }
@@ -111,6 +119,52 @@ export class ChatViewProvider
         error: error instanceof Error ? error.message : String(error),
       };
     }
+    await this.postMessage(message);
+  }
+
+  private async pickAttachments(requestId: string): Promise<void> {
+    try {
+      await this.postAttachmentSelection({
+        type: "attachmentsSelected",
+        requestId,
+        attachments: await this.attachments.pickFiles(),
+      });
+    } catch (error) {
+      await this.postAttachmentSelection({
+        type: "attachmentsSelected",
+        requestId,
+        attachments: [],
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async saveClipboardImage(
+    message: Extract<
+      WebviewToExtensionMessage,
+      { readonly type: "saveClipboardImage" }
+    >,
+  ): Promise<void> {
+    try {
+      const attachment = await this.attachments.saveClipboardImage(message);
+      await this.postAttachmentSelection({
+        type: "attachmentsSelected",
+        requestId: message.requestId,
+        attachments: [attachment],
+      });
+    } catch (error) {
+      await this.postAttachmentSelection({
+        type: "attachmentsSelected",
+        requestId: message.requestId,
+        attachments: [],
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async postAttachmentSelection(
+    message: AttachmentSelectionMessage,
+  ): Promise<void> {
     await this.postMessage(message);
   }
 

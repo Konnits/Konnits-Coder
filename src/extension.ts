@@ -6,6 +6,7 @@ import { VsCodeFileSystem } from "./changes/VsCodeFileSystem.js";
 import { ChatController } from "./chat/ChatController.js";
 import { ChatViewProvider } from "./chat/ChatViewProvider.js";
 import { WorkspaceReferenceService } from "./chat/WorkspaceReferenceService.js";
+import { ChatAttachmentService } from "./chat/ChatAttachmentService.js";
 import { Configuration } from "./configuration/Configuration.js";
 import { Logger } from "./logging/Logger.js";
 import { ModelManagementController } from "./models/ModelManagementController.js";
@@ -16,6 +17,7 @@ import { QwenCodeAgentClient } from "./qwen/QwenCodeAgentClient.js";
 import { QwenCommandProvider } from "./qwen/QwenCommandProvider.js";
 import { QwenSessionManager } from "./qwen/QwenSessionManager.js";
 import { QwenSessionHistoryService } from "./qwen/QwenSessionHistoryService.js";
+import { QwenSessionRewindService } from "./qwen/QwenSessionRewindService.js";
 import { QwenSubagentCatalog } from "./qwen/QwenSubagentRegistry.js";
 import { SlashCommandRegistry } from "./commands/SlashCommandRegistry.js";
 import { KonnitsCommandRouter } from "./commands/KonnitsCommandRouter.js";
@@ -58,6 +60,16 @@ export function activate(context: vscode.ExtensionContext): void {
   registerKonnitsCommands(commandRegistry, subagents);
   const commandRouter = new KonnitsCommandRouter(commandRegistry);
   const referenceService = new WorkspaceReferenceService();
+  const attachmentRoot = vscode.Uri.joinPath(
+    context.storageUri ?? context.globalStorageUri,
+    "chat-attachments",
+  );
+  const attachments = new ChatAttachmentService(attachmentRoot);
+  const sessionRewind = new QwenSessionRewindService(() => {
+    const executablePath =
+      configuration.getQwenClientConfiguration().executablePath;
+    return executablePath === undefined ? {} : { executablePath };
+  });
   const modelManagement = new ModelManagementController(
     new QwenSettingsService(),
     new OpenAICompatibleEndpointProbe(),
@@ -75,18 +87,22 @@ export function activate(context: vscode.ExtensionContext): void {
     modelManagement,
     history,
     commandRouter,
+    attachments,
+    sessionRewind,
   );
   const view = new ChatViewProvider(
     context.extensionUri,
     controller,
     commandRegistry,
     referenceService,
+    attachments,
   );
 
   context.subscriptions.push(
     logger,
     controller,
     view,
+    attachments,
     { dispose: () => void agent.dispose() },
     vscode.workspace.registerTextDocumentContentProvider(
       DiffContentProvider.scheme,

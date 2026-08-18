@@ -1,9 +1,11 @@
+import { useLayoutEffect, useRef } from "react";
 import type {
   SlashCommandSuggestion,
   WorkspaceReferenceSuggestion,
 } from "../../src/webview/messages.js";
 
 interface SuggestionPopupProps {
+  readonly id: string;
   readonly kind: "command" | "reference";
   readonly commands: readonly SlashCommandSuggestion[];
   readonly references: readonly WorkspaceReferenceSuggestion[];
@@ -14,6 +16,7 @@ interface SuggestionPopupProps {
 }
 
 export function SuggestionPopup({
+  id,
   kind,
   commands,
   references,
@@ -22,8 +25,20 @@ export function SuggestionPopup({
   onSelectCommand,
   onSelectReference,
 }: SuggestionPopupProps): React.JSX.Element {
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    scrollSuggestionIntoView(popupRef.current, highlightedIndex);
+  }, [commands, highlightedIndex, kind, references]);
+
   return (
-    <div className="suggestion-popup" role="listbox" aria-label="Suggestions">
+    <div
+      ref={popupRef}
+      className="suggestion-popup"
+      id={id}
+      role="listbox"
+      aria-label="Suggestions"
+    >
       {kind === "command" && commands.length === 0 ? (
         <div className="suggestion-empty">No commands available</div>
       ) : kind === "reference" && references.length === 0 ? (
@@ -32,6 +47,7 @@ export function SuggestionPopup({
         commands.map((command, index) => (
           <SuggestionItem
             key={command.id}
+            id={`${id}-option-${String(index)}`}
             index={index}
             selected={index === highlightedIndex}
             main={command.command}
@@ -50,6 +66,7 @@ export function SuggestionPopup({
         references.map((reference, index) => (
           <SuggestionItem
             key={reference.id}
+            id={`${id}-option-${String(index)}`}
             index={index}
             selected={index === highlightedIndex}
             main={`@${reference.displayName}`}
@@ -64,6 +81,7 @@ export function SuggestionPopup({
 }
 
 interface SuggestionItemProps {
+  readonly id: string;
   readonly index: number;
   readonly selected: boolean;
   readonly main: string;
@@ -77,6 +95,7 @@ interface SuggestionItemProps {
 }
 
 function SuggestionItem({
+  id,
   index,
   selected,
   main,
@@ -90,6 +109,8 @@ function SuggestionItem({
 }: SuggestionItemProps): React.JSX.Element {
   return (
     <button
+      id={id}
+      data-suggestion-index={index}
       className={`suggestion-item${selected ? " suggestion-selected" : ""}${unavailable ? " suggestion-unavailable" : ""}`}
       role="option"
       aria-selected={selected}
@@ -112,6 +133,16 @@ function SuggestionItem({
       )}
     </button>
   );
+}
+
+export function scrollSuggestionIntoView(
+  container: HTMLElement | null,
+  highlightedIndex: number,
+): void {
+  const selected = container?.querySelector<HTMLElement>(
+    `[data-suggestion-index="${String(highlightedIndex)}"]`,
+  );
+  selected?.scrollIntoView({ block: "nearest" });
 }
 
 function formatCommandSource(command: SlashCommandSuggestion): string {

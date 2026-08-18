@@ -90,6 +90,21 @@ export interface ToolCompletedEvent {
   readonly timestamp: number;
 }
 
+export type AgentTodoStatus = "pending" | "in_progress" | "completed";
+
+export interface AgentTodo {
+  readonly id: string;
+  readonly content: string;
+  readonly status: AgentTodoStatus;
+}
+
+export interface TodosUpdatedEvent {
+  readonly type: "todos.updated";
+  readonly todos: readonly AgentTodo[];
+  readonly parentId?: string;
+  readonly timestamp: number;
+}
+
 export interface AgentCompletedEvent {
   readonly type: "agent.completed";
   readonly runId: string;
@@ -135,6 +150,7 @@ export type AgentEvent =
   | ThinkingCompletedEvent
   | ToolStartedEvent
   | ToolCompletedEvent
+  | TodosUpdatedEvent
   | ContextUsageUpdatedEvent
   | TurnUsageUpdatedEvent
   | AgentCompletedEvent

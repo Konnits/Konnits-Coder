@@ -9,6 +9,7 @@ import type {
 import type {
   AgentActivityKind,
   AgentEvent,
+  AgentTodo,
   ToolCompletedEvent,
   ToolStartedEvent,
 } from "../agent/AgentEvent.js";
@@ -262,6 +263,15 @@ export class QwenEventAdapter {
         );
         if (started !== undefined) {
           events.push(started);
+          const todos = parseTodos(block.name, block.input);
+          if (todos !== undefined) {
+            events.push({
+              type: "todos.updated",
+              todos,
+              ...(parentId === undefined ? {} : { parentId }),
+              timestamp: Date.now(),
+            });
+          }
         }
       } else if (block.type === "tool_result") {
         const completed = this.completeTool(
@@ -538,6 +548,56 @@ function asToolInput(value: unknown): ToolInput {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as ToolInput)
     : {};
+}
+
+function parseTodos(
+  toolName: string,
+  rawInput: unknown,
+): readonly AgentTodo[] | undefined {
+  const normalized = toolName.toLowerCase();
+  if (normalized !== "todo_write" && normalized !== "write_todos") {
+    return undefined;
+  }
+  if (!isRecord(rawInput)) {
+    return undefined;
+  }
+  const values: readonly unknown[] | undefined = Array.isArray(rawInput.todos)
+    ? rawInput.todos
+    : Array.isArray(rawInput.tasks)
+      ? rawInput.tasks
+      : undefined;
+  if (values === undefined) {
+    return undefined;
+  }
+
+  const todos: AgentTodo[] = [];
+  for (const value of values) {
+    if (
+      !isRecord(value) ||
+      !("id" in value) ||
+      typeof value.id !== "string" ||
+      value.id.trim().length === 0 ||
+      !("content" in value) ||
+      typeof value.content !== "string" ||
+      value.content.trim().length === 0 ||
+      !("status" in value) ||
+      (value.status !== "pending" &&
+        value.status !== "in_progress" &&
+        value.status !== "completed")
+    ) {
+      return undefined;
+    }
+    todos.push({
+      id: value.id,
+      content: value.content,
+      status: value.status,
+    });
+  }
+  return todos;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function firstString(...values: readonly unknown[]): string | undefined {

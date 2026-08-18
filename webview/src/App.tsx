@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   AppState,
-  ChangeViewModel,
   ExtensionToWebviewMessage,
   ChatReference,
+  TimelineItem,
   SlashCommandSuggestion,
   WorkspaceReferenceSuggestion,
 } from "../../src/webview/messages.js";
 import {
   parseComposerSuggestionMode,
   replaceComposerSuggestion,
+  type ComposerSuggestionMode,
 } from "../../src/chat/ComposerInputParser.js";
 import { AgentTurn } from "./AgentTurn.js";
 import { ContextUsageMeter } from "./ContextUsageMeter.js";
@@ -23,12 +24,22 @@ import { vscode } from "./vscode.js";
 import { useStickyBottom } from "./stickyBottom.js";
 import { PermissionCard } from "./PermissionCard.js";
 import { SuggestionPopup } from "./SuggestionPopup.js";
+import { ChatScrollRegion } from "./ChatScrollRegion.js";
+import { ChangedFilesPanel, TodosPanel } from "./WorkSummaryPanels.js";
+import {
+  moveSuggestionHighlight,
+  resizeComposerTextarea,
+} from "./composerLayout.js";
+import { encodeClipboardImage } from "./clipboardAttachment.js";
+
+const SUGGESTION_LISTBOX_ID = "composer-suggestions";
 
 const initialState: AppState = {
   status: "idle",
   trusted: true,
   model: { label: "Loading model…", configuredCount: 0 },
   timeline: [],
+  todos: [],
   changes: [],
   permissions: [],
 };
@@ -51,16 +62,23 @@ export function App(): React.JSX.Element {
   const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<
     string | undefined
   >();
+  const [attachmentError, setAttachmentError] = useState<string>();
+  const [editingPromptId, setEditingPromptId] = useState<string>();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const requestId = useRef(0);
+  const attachmentRequestId = useRef(0);
+  const pendingAttachmentRequests = useRef(new Set<string>());
   const busy = useMemo(
     () =>
       state.status === "connecting" ||
       state.status === "running" ||
       state.status === "waitingForPermission" ||
-      state.status === "cancelling",
+      state.status === "cancelling" ||
+      state.status === "restoring",
     [state.status],
   );
+  const canSendFollowUp = state.status === "running";
+  const composerDisabled = !state.trusted || (busy && !canSendFollowUp);
   const timelineScrollKey = useMemo(
     () =>
       state.timeline
@@ -71,7 +89,11 @@ export function App(): React.JSX.Element {
           if (item.type === "thinking") {
             return `${item.type}:${item.id}:${String(item.text.length)}:${String(item.complete)}:${String(item.cancelled)}`;
           }
-          if (item.type === "finalResponse" || item.type === "user") {
+          if (
+            item.type === "finalResponse" ||
+            item.type === "user" ||
+            item.type === "followUp"
+          ) {
             return `${item.type}:${item.id}:${String(item.text.length)}`;
           }
           if (item.type === "tool") {
@@ -92,8 +114,15 @@ export function App(): React.JSX.Element {
     () => state.permissions.map((permission) => permission.id).join("|"),
     [state.permissions],
   );
+  const todoScrollKey = useMemo(
+    () =>
+      state.todos
+        .map((todo) => `${todo.id}:${todo.status}:${todo.content}`)
+        .join("|"),
+    [state.todos],
+  );
   const { contentRef, following, jumpToLatest } = useStickyBottom(
-    `${timelineScrollKey}|${permissionScrollKey}|${state.status}|${String(state.changes.length)}`,
+    `${timelineScrollKey}|${permissionScrollKey}|${todoScrollKey}|${state.status}|${String(state.changes.length)}`,
     state.sessionId ?? "no-session",
   );
 
@@ -108,6 +137,17 @@ export function App(): React.JSX.Element {
         if (event.data.requestId === String(requestId.current)) {
           setReferenceResults(event.data.references);
         }
+      } else if (isAttachmentSelectionMessage(event.data)) {
+        if (!pendingAttachmentRequests.current.delete(event.data.requestId)) {
+          return;
+        }
+        setAttachmentError(event.data.error);
+        const attachments = event.data.attachments;
+        if (attachments.length > 0) {
+          setSelectedReferences((current) =>
+            mergeReferences(current, attachments),
+          );
+        }
       }
     };
     window.addEventListener("message", listener);
@@ -115,15 +155,19 @@ export function App(): React.JSX.Element {
     return () => window.removeEventListener("message", listener);
   }, []);
 
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea !== null) {
+      resizeComposerTextarea(textarea);
+    }
+  }, [prompt]);
+
   const suggestionMode = useMemo(
     () => parseComposerSuggestionMode(prompt, cursor),
     [cursor, prompt],
   );
   const suggestionKey = useMemo(
-    () =>
-      suggestionMode.kind === "none"
-        ? "none"
-        : `${suggestionMode.kind}:${String(suggestionMode.start)}:${String(suggestionMode.end)}:${suggestionMode.query}`,
+    () => createSuggestionKey(suggestionMode),
     [suggestionMode],
   );
   const visibleCommands = useMemo(() => {
@@ -151,7 +195,15 @@ export function App(): React.JSX.Element {
     if (suggestionMode.kind === "command" && !commandsLoaded) {
       vscode.postMessage({ type: "requestSlashCommands" });
     }
-  }, [commandsLoaded, suggestionMode.kind]);
+  }, [commandsLoaded, suggestionKey, suggestionMode.kind]);
+
+  useEffect(() => {
+    setHighlightedIndex((index) =>
+      visibleSuggestions.length === 0
+        ? 0
+        : Math.min(index, visibleSuggestions.length - 1),
+    );
+  }, [visibleSuggestions.length]);
 
   useEffect(() => {
     if (suggestionMode.kind !== "reference") {
@@ -180,27 +232,113 @@ export function App(): React.JSX.Element {
     const value = prompt.trim();
     if (
       (value.length === 0 && selectedReferences.length === 0) ||
-      busy ||
+      (busy && !canSendFollowUp) ||
       !state.trusted
     ) {
       return;
     }
-    vscode.postMessage({
-      type: "sendPrompt",
-      prompt: value,
-      ...(selectedReferences.length === 0
-        ? {}
-        : { references: selectedReferences }),
-    });
+    vscode.postMessage(
+      editingPromptId === undefined
+        ? {
+            type: "sendPrompt",
+            prompt: value,
+            ...(selectedReferences.length === 0
+              ? {}
+              : { references: selectedReferences }),
+          }
+        : {
+            type: "editPrompt",
+            id: editingPromptId,
+            prompt: value,
+            ...(selectedReferences.length === 0
+              ? {}
+              : { references: selectedReferences }),
+          },
+    );
     setPrompt("");
     setCursor(0);
     setSelectedReferences([]);
+    setAttachmentError(undefined);
+    setEditingPromptId(undefined);
   };
 
-  const updatePrompt = (value: string, nextCursor: number): void => {
+  const editPrompt = (user: Extract<TimelineItem, { type: "user" }>): void => {
+    setEditingPromptId(user.id);
+    setPrompt(user.text);
+    setCursor(user.text.length);
+    setSelectedReferences(user.references ?? []);
+    setAttachmentError(undefined);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(
+        user.text.length,
+        user.text.length,
+      );
+    });
+  };
+
+  const cancelPromptEdit = (): void => {
+    setEditingPromptId(undefined);
+    setPrompt("");
+    setCursor(0);
+    setSelectedReferences([]);
+    setAttachmentError(undefined);
+  };
+
+  const requestAttachments = (): void => {
+    if (busy || !state.trusted) {
+      return;
+    }
+    const id = createAttachmentRequestId(attachmentRequestId);
+    pendingAttachmentRequests.current.add(id);
+    setAttachmentError(undefined);
+    vscode.postMessage({ type: "pickAttachments", requestId: id });
+  };
+
+  const pasteImage = async (
+    event: React.ClipboardEvent<HTMLTextAreaElement>,
+  ): Promise<void> => {
+    const image = findClipboardImage(event.clipboardData.files);
+    if (image === undefined) {
+      return;
+    }
+    event.preventDefault();
+    if (busy || !state.trusted) {
+      setAttachmentError(
+        "Images can be attached before starting a Qwen operation.",
+      );
+      return;
+    }
+    const id = createAttachmentRequestId(attachmentRequestId);
+    pendingAttachmentRequests.current.add(id);
+    setAttachmentError(undefined);
+    try {
+      const encoded = await encodeClipboardImage(image);
+      vscode.postMessage({
+        type: "saveClipboardImage",
+        requestId: id,
+        ...encoded,
+      });
+    } catch (error) {
+      pendingAttachmentRequests.current.delete(id);
+      setAttachmentError(
+        error instanceof Error ? error.message : "Unable to attach the image.",
+      );
+    }
+  };
+
+  const updatePrompt = (
+    value: string,
+    nextCursor: number,
+    dismissSuggestions = false,
+  ): void => {
     setPrompt(value);
     setCursor(nextCursor);
-    setDismissedSuggestionKey(undefined);
+    setDismissedSuggestionKey(
+      dismissSuggestions
+        ? createSuggestionKey(parseComposerSuggestionMode(value, nextCursor))
+        : undefined,
+    );
     window.requestAnimationFrame(() => {
       const textarea = textareaRef.current;
       textarea?.focus();
@@ -216,6 +354,7 @@ export function App(): React.JSX.Element {
     updatePrompt(
       replaceComposerSuggestion(prompt, suggestionMode, replacement),
       suggestionMode.start + replacement.length,
+      true,
     );
   };
 
@@ -239,13 +378,15 @@ export function App(): React.JSX.Element {
       if (event.key === "ArrowDown") {
         event.preventDefault();
         setHighlightedIndex((index) =>
-          Math.min(index + 1, visibleSuggestions.length - 1),
+          moveSuggestionHighlight(index, 1, visibleSuggestions.length),
         );
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
-        setHighlightedIndex((index) => Math.max(index - 1, 0));
+        setHighlightedIndex((index) =>
+          moveSuggestionHighlight(index, -1, visibleSuggestions.length),
+        );
         return;
       }
       if (event.key === "Escape") {
@@ -306,7 +447,11 @@ export function App(): React.JSX.Element {
         )}
       </div>
 
-      <div className="chat-body" ref={contentRef}>
+      <ChatScrollRegion
+        contentRef={contentRef}
+        following={following}
+        onJumpToLatest={jumpToLatest}
+      >
         {!state.trusted && (
           <section className="notice" role="alert">
             Qwen execution is disabled in Restricted Mode. Trust this workspace
@@ -336,6 +481,14 @@ export function App(): React.JSX.Element {
                 turn={entry}
                 workspacePath={state.workspacePath}
                 onOpenLink={openLink}
+                canRetry={!busy && state.trusted}
+                onRetry={(id) =>
+                  vscode.postMessage({ type: "retryPrompt", id })
+                }
+                onEdit={editPrompt}
+                onRestoreFiles={(id) =>
+                  vscode.postMessage({ type: "restorePromptFiles", id })
+                }
               />
             ) : (
               <StandaloneEntry
@@ -360,35 +513,34 @@ export function App(): React.JSX.Element {
           ))}
         </section>
 
-        {state.changes.length > 0 && <ChangedFiles changes={state.changes} />}
-
-        {!following && (
-          <button
-            className="jump-latest"
-            type="button"
-            aria-label="Jump to latest message"
-            title="Jump to latest"
-            onClick={jumpToLatest}
-          >
-            <svg
-              viewBox="0 0 12 12"
-              width="12"
-              height="12"
-              aria-hidden="true"
-              focusable="false"
-            >
-              <path d="M6 1.5v6m0 0L3.25 4.75M6 7.5l2.75-2.75" />
-            </svg>
-          </button>
+        {(state.todos.length > 0 || state.changes.length > 0) && (
+          <div className="work-summary-panels">
+            {state.todos.length > 0 && <TodosPanel todos={state.todos} />}
+            {state.changes.length > 0 && (
+              <ChangedFilesPanel changes={state.changes} />
+            )}
+          </div>
         )}
-      </div>
+      </ChatScrollRegion>
 
       <footer className="composer">
+        {editingPromptId !== undefined && (
+          <div className="composer-editing" role="status">
+            <span>
+              Editing: later turns and tracked file changes will be removed
+            </span>
+            <button type="button" onClick={cancelPromptEdit}>
+              Cancel
+            </button>
+          </div>
+        )}
         {selectedReferences.length > 0 && (
           <div className="reference-chips" aria-label="Selected references">
             {selectedReferences.map((reference) => (
               <span className="reference-chip" key={reference.id}>
-                <span aria-hidden="true">@</span>
+                <span aria-hidden="true">
+                  {reference.source === "attachment" ? "📎" : "@"}
+                </span>
                 <span>{reference.displayName}</span>
                 <button
                   type="button"
@@ -405,9 +557,15 @@ export function App(): React.JSX.Element {
             ))}
           </div>
         )}
+        {attachmentError !== undefined && (
+          <div className="composer-error" role="alert">
+            {attachmentError}
+          </div>
+        )}
         <div className="composer-input">
           {suggestionsOpen && (
             <SuggestionPopup
+              id={SUGGESTION_LISTBOX_ID}
               kind={
                 suggestionMode.kind === "reference" ? "reference" : "command"
               }
@@ -422,12 +580,23 @@ export function App(): React.JSX.Element {
           <textarea
             ref={textareaRef}
             value={prompt}
-            disabled={busy || !state.trusted}
-            rows={3}
+            disabled={composerDisabled}
+            rows={1}
             aria-label="Message Qwen"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={suggestionsOpen}
+            {...(suggestionsOpen
+              ? {
+                  "aria-controls": SUGGESTION_LISTBOX_ID,
+                  "aria-activedescendant": `${SUGGESTION_LISTBOX_ID}-option-${String(highlightedIndex)}`,
+                }
+              : {})}
             placeholder={
               state.trusted
-                ? "Ask Qwen to work on this workspace…"
+                ? canSendFollowUp
+                  ? "Send an update to Qwen…"
+                  : "Ask Qwen to work on this workspace…"
                 : "Trust workspace to chat"
             }
             onChange={(event) => {
@@ -437,32 +606,60 @@ export function App(): React.JSX.Element {
             }}
             onSelect={(event) => setCursor(event.currentTarget.selectionStart)}
             onClick={(event) => setCursor(event.currentTarget.selectionStart)}
-            onKeyUp={(event) => setCursor(event.currentTarget.selectionStart)}
             onKeyDown={onComposerKeyDown}
+            onPaste={(event) => void pasteImage(event)}
           />
         </div>
         <div className="composer-actions">
-          {busy ? (
+          <div className="composer-tools">
             <button
-              className="danger"
-              disabled={state.status === "cancelling"}
-              onClick={() => vscode.postMessage({ type: "cancel" })}
+              type="button"
+              className="icon-button"
+              disabled={busy || !state.trusted}
+              title="Attach files or paste an image"
+              aria-label="Attach files"
+              onClick={requestAttachments}
             >
-              {state.status === "cancelling" ? "Cancelling…" : "Cancel"}
+              <AttachmentIcon />
             </button>
-          ) : (
+            <button
+              type="button"
+              className="icon-button"
+              title="Manage agent permissions"
+              aria-label="Manage agent permissions"
+              onClick={() =>
+                vscode.postMessage({ type: "openPermissionSettings" })
+              }
+            >
+              <PermissionsIcon />
+            </button>
+          </div>
+          <div className="composer-submit">
+            {busy && state.status !== "restoring" && (
+              <button
+                className="danger"
+                disabled={state.status === "cancelling"}
+                onClick={() => vscode.postMessage({ type: "cancel" })}
+              >
+                {state.status === "cancelling" ? "Cancelling…" : "Cancel"}
+              </button>
+            )}
             <button
               className="primary"
               disabled={
                 (prompt.trim().length === 0 &&
                   selectedReferences.length === 0) ||
-                !state.trusted
+                composerDisabled
               }
               onClick={send}
             >
-              Send
+              {editingPromptId !== undefined
+                ? "Save edit"
+                : canSendFollowUp
+                  ? "Send update"
+                  : "Send"}
             </button>
-          )}
+          </div>
         </div>
       </footer>
     </main>
@@ -494,6 +691,8 @@ function isStateMessage(
     state.model !== null &&
     "timeline" in state &&
     Array.isArray(state.timeline) &&
+    "todos" in state &&
+    Array.isArray(state.todos) &&
     "changes" in state &&
     Array.isArray(state.changes) &&
     "permissions" in state &&
@@ -532,6 +731,97 @@ function isWorkspaceReferencesMessage(
     typeof value.requestId === "string" &&
     "references" in value &&
     Array.isArray(value.references)
+  );
+}
+
+function isAttachmentSelectionMessage(
+  value: unknown,
+): value is Extract<
+  ExtensionToWebviewMessage,
+  { readonly type: "attachmentsSelected" }
+> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "attachmentsSelected" &&
+    "requestId" in value &&
+    typeof value.requestId === "string" &&
+    "attachments" in value &&
+    Array.isArray(value.attachments) &&
+    value.attachments.every(isChatReference) &&
+    (!("error" in value) ||
+      value.error === undefined ||
+      typeof value.error === "string")
+  );
+}
+
+function isChatReference(value: unknown): value is ChatReference {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    "kind" in value &&
+    (value.kind === "file" || value.kind === "directory") &&
+    "workspaceFolderUri" in value &&
+    typeof value.workspaceFolderUri === "string" &&
+    "uri" in value &&
+    typeof value.uri === "string" &&
+    "relativePath" in value &&
+    typeof value.relativePath === "string" &&
+    "displayName" in value &&
+    typeof value.displayName === "string" &&
+    (!("workspaceName" in value) ||
+      value.workspaceName === undefined ||
+      typeof value.workspaceName === "string") &&
+    (!("source" in value) ||
+      value.source === undefined ||
+      value.source === "workspace" ||
+      value.source === "attachment")
+  );
+}
+
+function findClipboardImage(files: FileList): File | undefined {
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files.item(index);
+    if (file?.type.startsWith("image/")) {
+      return file;
+    }
+  }
+  return undefined;
+}
+
+function createAttachmentRequestId(counter: { current: number }): string {
+  counter.current += 1;
+  return `attachment-${String(counter.current)}`;
+}
+
+function mergeReferences(
+  current: readonly ChatReference[],
+  additions: readonly ChatReference[],
+): readonly ChatReference[] {
+  const merged = new Map(current.map((reference) => [reference.id, reference]));
+  for (const reference of additions) {
+    merged.set(reference.id, reference);
+  }
+  return [...merged.values()];
+}
+
+function AttachmentIcon(): React.JSX.Element {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M5.2 8.7 9.8 4a2.1 2.1 0 0 1 3 3L7.2 12.6a3.2 3.2 0 0 1-4.5-4.5l5.5-5.5" />
+    </svg>
+  );
+}
+
+function PermissionsIcon(): React.JSX.Element {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M8 1.5 13 3.4v3.8c0 3.2-2 5.8-5 7.3-3-1.5-5-4.1-5-7.3V3.4L8 1.5Z" />
+      <path d="m5.8 8 1.4 1.4 3-3" />
+    </svg>
   );
 }
 
@@ -615,80 +905,24 @@ function StandaloneEntry({
           <MarkdownMessage source={item.markdown} onOpenLink={onOpenLink} />
         </article>
       );
+    case "followUp":
+      return (
+        <article className="message user-message follow-up-message">
+          <div className="eyebrow">You · Update</div>
+          <p>{item.text}</p>
+          <TokenCount count={item.tokenCount} />
+        </article>
+      );
     case "thinking":
     case "turnUsage":
       return null;
   }
 }
 
-function ChangedFiles({
-  changes,
-}: {
-  readonly changes: readonly ChangeViewModel[];
-}): React.JSX.Element {
-  const pending = changes.filter((change) => change.status === "pending");
-  return (
-    <section className="changes" aria-label="Changed files">
-      <div className="section-heading">
-        <h2>Changed files</h2>
-        <span>{pending.length} pending</span>
-      </div>
-      <div className="change-list">
-        {changes.map((change) => (
-          <article className={`change change-${change.status}`} key={change.id}>
-            <button
-              className="file-link"
-              title={`Review ${change.path}`}
-              onClick={() =>
-                vscode.postMessage({ type: "reviewFile", id: change.id })
-              }
-            >
-              <span className="file-status">{fileStatus(change.status)}</span>
-              <span className="file-path">{change.path}</span>
-              <span className="diff-stat">
-                <span className="additions">+{change.additions}</span>{" "}
-                <span className="deletions">-{change.deletions}</span>
-              </span>
-            </button>
-            {change.conflictReason !== undefined && (
-              <p className="conflict-reason">{change.conflictReason}</p>
-            )}
-            {change.status === "pending" && (
-              <div className="file-actions">
-                <button
-                  onClick={() =>
-                    vscode.postMessage({ type: "acceptFile", id: change.id })
-                  }
-                >
-                  Accept
-                </button>
-                <button
-                  onClick={() =>
-                    vscode.postMessage({ type: "rejectFile", id: change.id })
-                  }
-                >
-                  Reject
-                </button>
-              </div>
-            )}
-          </article>
-        ))}
-      </div>
-      {pending.length > 0 && (
-        <div className="button-row bulk-actions">
-          <button
-            className="primary"
-            onClick={() => vscode.postMessage({ type: "acceptAll" })}
-          >
-            Accept all
-          </button>
-          <button onClick={() => vscode.postMessage({ type: "rejectAll" })}>
-            Reject all
-          </button>
-        </div>
-      )}
-    </section>
-  );
+function createSuggestionKey(mode: ComposerSuggestionMode): string {
+  return mode.kind === "none"
+    ? "none"
+    : `${mode.kind}:${String(mode.start)}:${String(mode.end)}:${mode.query}`;
 }
 
 function statusLabel(status: AppState["status"]): string {
@@ -699,21 +933,9 @@ function statusLabel(status: AppState["status"]): string {
     running: "Qwen is working",
     waitingForPermission: "Waiting for permission",
     cancelling: "Cancelling",
+    restoring: "Restoring checkpoint",
     failed: "Failed",
     completed: "Completed",
   };
   return labels[status];
-}
-
-function fileStatus(status: ChangeViewModel["status"]): string {
-  switch (status) {
-    case "pending":
-      return "M";
-    case "accepted":
-      return "✓";
-    case "rejected":
-      return "↶";
-    case "conflicted":
-      return "!";
-  }
 }

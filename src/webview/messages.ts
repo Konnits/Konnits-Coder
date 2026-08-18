@@ -16,6 +16,7 @@ export type ExecutionStatus =
   | "running"
   | "waitingForPermission"
   | "cancelling"
+  | "restoring"
   | "failed"
   | "completed";
 
@@ -29,6 +30,7 @@ export interface ChatReference {
   readonly relativePath: string;
   readonly displayName: string;
   readonly workspaceName?: string;
+  readonly source?: "workspace" | "attachment";
 }
 
 export type SlashCommandSuggestion = SlashCommandDescriptor;
@@ -39,6 +41,16 @@ export interface WorkspaceReferenceSuggestion extends ChatReference {
 
 export interface UserTimelineItem {
   readonly type: "user";
+  readonly id: string;
+  readonly text: string;
+  readonly tokenCount?: MessageTokenCount;
+  readonly references?: readonly ChatReference[];
+  readonly canEdit?: boolean;
+  readonly canRestoreFiles?: boolean;
+}
+
+export interface FollowUpTimelineItem {
+  readonly type: "followUp";
   readonly id: string;
   readonly text: string;
   readonly tokenCount?: MessageTokenCount;
@@ -109,6 +121,7 @@ export interface CommandResultTimelineItem {
 
 export type TimelineItem =
   | UserTimelineItem
+  | FollowUpTimelineItem
   | AssistantTimelineItem
   | ThinkingTimelineItem
   | FinalResponseTimelineItem
@@ -120,10 +133,17 @@ export type TimelineItem =
 export interface ChangeViewModel {
   readonly id: string;
   readonly path: string;
+  readonly kind: "added" | "modified" | "deleted";
   readonly status: FileChangeStatus;
   readonly additions: number;
   readonly deletions: number;
   readonly conflictReason?: string;
+}
+
+export interface TodoViewModel {
+  readonly id: string;
+  readonly content: string;
+  readonly status: "pending" | "in_progress" | "completed";
 }
 
 export interface PermissionViewModel {
@@ -142,6 +162,7 @@ export interface AppState {
   readonly contextUsage?: ContextTokenUsage;
   readonly model: ModelSelectorViewState;
   readonly timeline: readonly TimelineItem[];
+  readonly todos: readonly TodoViewModel[];
   readonly changes: readonly ChangeViewModel[];
   readonly permissions: readonly PermissionViewModel[];
 }
@@ -152,7 +173,8 @@ export type ExtensionToWebviewMessage =
       readonly state: AppState;
     }
   | SlashCommandsMessage
-  | WorkspaceReferencesMessage;
+  | WorkspaceReferencesMessage
+  | AttachmentSelectionMessage;
 
 export interface SlashCommandsMessage {
   readonly type: "slashCommands";
@@ -164,6 +186,13 @@ export interface WorkspaceReferencesMessage {
   readonly type: "workspaceReferences";
   readonly requestId: string;
   readonly references: readonly WorkspaceReferenceSuggestion[];
+  readonly error?: string;
+}
+
+export interface AttachmentSelectionMessage {
+  readonly type: "attachmentsSelected";
+  readonly requestId: string;
+  readonly attachments: readonly ChatReference[];
   readonly error?: string;
 }
 
@@ -186,6 +215,23 @@ export type WebviewToExtensionMessage =
   | { readonly type: "manageModels" }
   | { readonly type: "addModel" }
   | { readonly type: "openModelSettings" }
+  | { readonly type: "openPermissionSettings" }
+  | { readonly type: "retryPrompt"; readonly id: string }
+  | {
+      readonly type: "editPrompt";
+      readonly id: string;
+      readonly prompt: string;
+      readonly references?: readonly ChatReference[];
+    }
+  | { readonly type: "restorePromptFiles"; readonly id: string }
+  | { readonly type: "pickAttachments"; readonly requestId: string }
+  | {
+      readonly type: "saveClipboardImage";
+      readonly requestId: string;
+      readonly name: string;
+      readonly mimeType: string;
+      readonly data: string;
+    }
   | { readonly type: "reviewFile"; readonly id: string }
   | { readonly type: "acceptFile"; readonly id: string }
   | { readonly type: "rejectFile"; readonly id: string }
@@ -212,10 +258,49 @@ export function parseWebviewMessage(
     case "manageModels":
     case "addModel":
     case "openModelSettings":
+    case "openPermissionSettings":
     case "acceptAll":
     case "rejectAll":
     case "requestSlashCommands":
       return { type: value.type };
+    case "retryPrompt":
+    case "restorePromptFiles":
+      return typeof value.id === "string"
+        ? { type: value.type, id: value.id }
+        : undefined;
+    case "editPrompt":
+      if (typeof value.id !== "string" || typeof value.prompt !== "string") {
+        return undefined;
+      }
+      if (value.references === undefined) {
+        return { type: "editPrompt", id: value.id, prompt: value.prompt };
+      }
+      return Array.isArray(value.references) &&
+        value.references.every(isChatReference)
+        ? {
+            type: "editPrompt",
+            id: value.id,
+            prompt: value.prompt,
+            references: value.references,
+          }
+        : undefined;
+    case "pickAttachments":
+      return typeof value.requestId === "string"
+        ? { type: "pickAttachments", requestId: value.requestId }
+        : undefined;
+    case "saveClipboardImage":
+      return typeof value.requestId === "string" &&
+        typeof value.name === "string" &&
+        typeof value.mimeType === "string" &&
+        typeof value.data === "string"
+        ? {
+            type: "saveClipboardImage",
+            requestId: value.requestId,
+            name: value.name,
+            mimeType: value.mimeType,
+            data: value.data,
+          }
+        : undefined;
     case "sendPrompt":
       if (typeof value.prompt !== "string") {
         return undefined;
@@ -275,6 +360,9 @@ function isChatReference(value: unknown): value is ChatReference {
     typeof value.uri === "string" &&
     typeof value.relativePath === "string" &&
     typeof value.displayName === "string" &&
+    (value.source === undefined ||
+      value.source === "workspace" ||
+      value.source === "attachment") &&
     (value.workspaceName === undefined ||
       typeof value.workspaceName === "string")
   );

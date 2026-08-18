@@ -134,6 +134,20 @@
           "scope": "window",
           "description": "Allow Qwen tools to open image files. Enable only when the selected model supports image input."
         },
+        "qwenFrontend.qwen.permissionMode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "plan"
+          ],
+          "enumDescriptions": [
+            "Ask before write operations and commands.",
+            "Allow read-only analysis and block write operations."
+          ],
+          "default": "default",
+          "scope": "window",
+          "description": "Controls the permissions granted to Qwen. Automatic edit and unrestricted modes are intentionally unavailable because they bypass safe file-change snapshots."
+        },
         "qwenFrontend.qwen.streamIdleTimeoutMs": {
           "type": "number",
           "default": 600000,

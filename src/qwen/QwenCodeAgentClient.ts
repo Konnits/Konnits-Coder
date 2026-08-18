@@ -24,6 +24,7 @@ import type { AgentEvent } from "../agent/AgentEvent.js";
 import { getEditTarget } from "../changes/toolTargets.js";
 import type { PermissionManager } from "../permissions/PermissionManager.js";
 import { classifyToolRisk } from "../permissions/toolRisk.js";
+import type { AgentPermissionMode } from "../permissions/AgentPermissionMode.js";
 import { describeTool, QwenEventAdapter } from "./QwenEventAdapter.js";
 import {
   actionableQwenError,
@@ -51,6 +52,7 @@ export interface QwenClientConfiguration {
   readonly executablePath?: string;
   readonly debug: boolean;
   readonly allowImageInput?: boolean;
+  readonly permissionMode?: AgentPermissionMode;
   /** Milliseconds without an SDK message before failing the turn. Zero disables it. */
   readonly streamIdleTimeoutMs?: number;
 }
@@ -132,6 +134,8 @@ export class QwenCodeAgentClient implements AgentClient {
       sessionId: request.sessionId,
       abortController,
       query: undefined,
+      prompt: undefined,
+      pendingMessages: [],
       cancellationRequested: false,
     };
     const diagnostics = new QwenDiagnosticCapture(
@@ -345,6 +349,29 @@ export class QwenCodeAgentClient implements AgentClient {
     }
   }
 
+  sendMessage(message: string): Promise<boolean> {
+    const text = message.trim();
+    const turn = this.activeTurn;
+    if (text.length === 0 || turn === undefined || turn.cancellationRequested) {
+      return Promise.resolve(false);
+    }
+    if (turn.prompt === undefined) {
+      if (turn.query !== undefined) {
+        return Promise.resolve(false);
+      }
+      turn.pendingMessages.push(text);
+      this.logger.debug(
+        `Follow-up queued before query readiness: turnId=${turn.runId}.`,
+      );
+      return Promise.resolve(true);
+    }
+    const accepted = turn.prompt.send(text);
+    if (accepted) {
+      this.logger.debug(`Follow-up sent: turnId=${turn.runId}.`);
+    }
+    return Promise.resolve(accepted);
+  }
+
   onEvent(listener: (event: AgentEvent) => void): Disposable {
     this.listeners.add(listener);
     return { dispose: () => this.listeners.delete(listener) };
@@ -369,7 +396,7 @@ export class QwenCodeAgentClient implements AgentClient {
     );
     return {
       cwd: request.workspacePath,
-      permissionMode: "default",
+      permissionMode: configuration.permissionMode ?? "default",
       includePartialMessages: true,
       abortController,
       canUseTool: async (toolName, input, { signal }) => {
@@ -439,6 +466,10 @@ export class QwenCodeAgentClient implements AgentClient {
       subagents,
     );
     const prompt = createControlledPrompt(request.prompt, request.sessionId);
+    for (const message of turn.pendingMessages.splice(0)) {
+      prompt.send(message);
+    }
+    turn.prompt = prompt;
     const activeQuery = this.queryFactory({ prompt: prompt.messages, options });
     turn.query = activeQuery;
     this.logger.debug(
@@ -527,6 +558,9 @@ export class QwenCodeAgentClient implements AgentClient {
     } finally {
       contextRefresh.stop();
       prompt.finish();
+      if (turn.prompt === prompt) {
+        turn.prompt = undefined;
+      }
       this.logger.debug(
         `Query iterator ended: turnId=${turn.runId} reason=${turn.cancellationRequested ? "cancelled" : iteratorCompleted ? "completed" : "error"}.`,
       );
@@ -707,6 +741,8 @@ interface ActiveQwenTurn {
   readonly sessionId: string;
   readonly abortController: AbortController;
   query: Query | undefined;
+  prompt: ControlledPrompt | undefined;
+  readonly pendingMessages: string[];
   cancellationRequested: boolean;
 }
 
@@ -726,6 +762,7 @@ class QwenStreamInactivityError extends Error {
 
 interface ControlledPrompt {
   readonly messages: AsyncIterable<SDKUserMessage>;
+  send(text: string): boolean;
   finish(): void;
 }
 
@@ -733,21 +770,52 @@ function createControlledPrompt(
   text: string,
   sessionId: string,
 ): ControlledPrompt {
-  let finish: (() => void) | undefined;
-  const finished = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
+  const queue = [createUserMessage(text, sessionId)];
+  const state: {
+    finished: boolean;
+    wake: (() => void) | undefined;
+  } = { finished: false, wake: undefined };
   return {
     messages: (async function* (): AsyncIterable<SDKUserMessage> {
-      yield {
-        type: "user",
-        session_id: sessionId,
-        message: { role: "user", content: text },
-        parent_tool_use_id: null,
-      };
-      await finished;
+      for (;;) {
+        const next = queue.shift();
+        if (next !== undefined) {
+          yield next;
+          continue;
+        }
+        if (state.finished) {
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          state.wake = resolve;
+        });
+        state.wake = undefined;
+      }
     })(),
-    finish: () => finish?.(),
+    send: (message) => {
+      if (state.finished) {
+        return false;
+      }
+      queue.push(createUserMessage(message, sessionId));
+      state.wake?.();
+      return true;
+    },
+    finish: () => {
+      if (state.finished) {
+        return;
+      }
+      state.finished = true;
+      state.wake?.();
+    },
+  };
+}
+
+function createUserMessage(text: string, sessionId: string): SDKUserMessage {
+  return {
+    type: "user",
+    session_id: sessionId,
+    message: { role: "user", content: text },
+    parent_tool_use_id: null,
   };
 }
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import type { AgentClient } from "../agent/AgentClient.js";
-import type { AgentEvent } from "../agent/AgentEvent.js";
+import type { AgentEvent, AgentTodo } from "../agent/AgentEvent.js";
 import {
   EstimatedTokenCounter,
   type ContextTokenUsage,
@@ -26,6 +26,8 @@ import type {
 } from "../qwen/QwenSessionHistoryService.js";
 import { canonicalWorkspacePath } from "../qwen/QwenSessionHistoryService.js";
 import { serializeQwenPrompt } from "../qwen/QwenReferenceSerializer.js";
+import type { ChatAttachmentAuthorization } from "./ChatAttachmentService.js";
+import type { SessionRewind } from "../qwen/QwenSessionRewindService.js";
 import {
   parseWebviewMessage,
   type AppState,
@@ -45,6 +47,8 @@ export class ChatController implements vscode.Disposable {
   private sessionId: string | undefined;
   private contextUsage: ContextTokenUsage | undefined;
   private contextSessionId: string | undefined;
+  private todos: readonly AgentTodo[] = [];
+  private readonly todoCheckpoints = new Map<string, readonly AgentTodo[]>();
   private modelState: ModelSelectorViewState = {
     label: "Loading model…",
     configuredCount: 0,
@@ -62,6 +66,8 @@ export class ChatController implements vscode.Disposable {
     private readonly models?: ModelManagement,
     private readonly history?: QwenSessionHistoryService,
     private readonly commands?: KonnitsCommandRouter,
+    private readonly attachments?: ChatAttachmentAuthorization,
+    private readonly sessionRewind?: SessionRewind,
   ) {
     this.disposables.push(
       this.agent.onEvent((event) => this.handleAgentEvent(event)),
@@ -82,10 +88,27 @@ export class ChatController implements vscode.Disposable {
         ? {}
         : { contextUsage: this.contextUsage }),
       model: this.modelState,
-      timeline: [...this.timeline],
+      timeline: this.timeline.map((item) =>
+        item.type === "user" && this.changes.hasCheckpoint(item.id)
+          ? {
+              ...item,
+              canEdit: true,
+              ...(this.changes.hasChangesSinceCheckpoint(item.id)
+                ? { canRestoreFiles: true }
+                : {}),
+            }
+          : item,
+      ),
+      todos: this.todos.map((todo) => ({ ...todo })),
       changes: this.changes.list().map((change) => ({
         id: change.id,
         path: this.fileSystem.displayPath(change.uri),
+        kind:
+          change.originalContent === null
+            ? "added"
+            : change.proposedContent === null
+              ? "deleted"
+              : "modified",
         status: change.status,
         additions: change.additions,
         deletions: change.deletions,
@@ -149,7 +172,10 @@ export class ChatController implements vscode.Disposable {
     this.sessionId = session.id;
     this.contextUsage = undefined;
     this.contextSessionId = undefined;
+    this.todos = [];
+    this.todoCheckpoints.clear();
     this.timeline.length = 0;
+    this.changes.clearCheckpoints();
     this.changes.clearSettled();
     this.setStatus(this.connected ? "connected" : "idle");
   }
@@ -283,6 +309,9 @@ export class ChatController implements vscode.Disposable {
       const selection = await this.sessions.resumeExisting(session.sessionId);
       this.sessionId = selection.session.id;
       this.timeline.splice(0, this.timeline.length, ...transcript);
+      this.todos = [];
+      this.todoCheckpoints.clear();
+      this.changes.clearCheckpoints();
       this.contextUsage = result.contextUsage;
       this.contextSessionId =
         result.contextUsage === undefined ? undefined : session.sessionId;
@@ -437,6 +466,25 @@ export class ChatController implements vscode.Disposable {
         case "openModelSettings":
           await this.openModelSettings();
           break;
+        case "openPermissionSettings":
+          await vscode.commands.executeCommand(
+            "workbench.action.openSettings",
+            "@ext:Konnits.konnits-coder qwenFrontend.qwen.permissionMode",
+          );
+          break;
+        case "retryPrompt":
+          await this.retryPrompt(message.id);
+          break;
+        case "editPrompt":
+          await this.editPrompt(
+            message.id,
+            message.prompt,
+            message.references ?? [],
+          );
+          break;
+        case "restorePromptFiles":
+          await this.restorePromptFiles(message.id);
+          break;
         case "reviewFile":
           await this.reviewFile(message.id);
           break;
@@ -472,13 +520,18 @@ export class ChatController implements vscode.Disposable {
     references: readonly ChatReference[],
   ): Promise<void> {
     const prompt = rawPrompt.trim();
-    if (
-      (prompt.length === 0 && references.length === 0) ||
-      isBusy(this.status)
-    ) {
+    if (prompt.length === 0 && references.length === 0) {
       return;
     }
+    this.validateAttachmentReferences(references);
     this.requireTrustedWorkspace();
+    if (this.status === "running") {
+      await this.sendFollowUp(prompt, references);
+      return;
+    }
+    if (isBusy(this.status)) {
+      return;
+    }
     const folders = vscode.workspace.workspaceFolders;
     const folder = folders?.[0];
     if (folders === undefined || folder === undefined) {
@@ -518,25 +571,208 @@ export class ChatController implements vscode.Disposable {
     const serializedPrompt = serializeQwenPrompt(prompt, references, {
       primaryWorkspaceFolderUri: folder.uri.toString(),
     });
+    const userId = randomUUID();
+    await this.changes.captureCheckpoint(userId);
+    this.todoCheckpoints.set(
+      userId,
+      this.todos.map((todo) => ({ ...todo })),
+    );
     this.timeline.push({
       type: "user",
+      id: userId,
+      text: prompt,
+      ...(tokenCount === undefined ? {} : { tokenCount }),
+      ...(references.length === 0 ? {} : { references: [...references] }),
+    });
+    this.emitChange();
+    const workspacePaths = uniqueStrings([
+      ...folders.map((workspace) => workspace.uri.fsPath),
+      ...(this.attachments?.additionalWorkspacePaths(references) ?? []),
+    ]);
+    await this.agent.run({
+      prompt: serializedPrompt,
+      workspacePath: folder.uri.fsPath,
+      ...(workspacePaths.length <= 1 ? {} : { workspacePaths }),
+      sessionId: selection.session.id,
+      resume: selection.resume,
+    });
+    if (this.status === "completed") {
+      await this.sessions.markEstablished(selection.session.id);
+    }
+  }
+
+  private async sendFollowUp(
+    prompt: string,
+    references: readonly ChatReference[],
+  ): Promise<void> {
+    if (references.some((reference) => reference.source === "attachment")) {
+      throw new Error(
+        "Attach files before starting a Qwen operation. Active-turn updates can still reference workspace files.",
+      );
+    }
+    const folders = vscode.workspace.workspaceFolders;
+    const folder = folders?.[0];
+    if (folders === undefined || folder === undefined) {
+      throw new Error(
+        "Open a workspace folder before sending a coding request.",
+      );
+    }
+    const serializedPrompt = serializeQwenPrompt(prompt, references, {
+      primaryWorkspaceFolderUri: folder.uri.toString(),
+    });
+    const accepted = await this.agent.sendMessage(serializedPrompt);
+    if (!accepted) {
+      if (!isBusy(this.status)) {
+        await this.sendPrompt(prompt, references);
+        return;
+      }
+      throw new Error(
+        "The active Qwen operation can no longer accept another message.",
+      );
+    }
+    const tokenCount = this.safeCountTokens(prompt);
+    this.timeline.push({
+      type: "followUp",
       id: randomUUID(),
       text: prompt,
       ...(tokenCount === undefined ? {} : { tokenCount }),
       ...(references.length === 0 ? {} : { references: [...references] }),
     });
     this.emitChange();
-    await this.agent.run({
-      prompt: serializedPrompt,
-      workspacePath: folder.uri.fsPath,
-      ...(folders.length <= 1
-        ? {}
-        : { workspacePaths: folders.map((workspace) => workspace.uri.fsPath) }),
-      sessionId: selection.session.id,
-      resume: selection.resume,
-    });
-    if (this.status === "completed") {
-      await this.sessions.markEstablished(selection.session.id);
+  }
+
+  private async retryPrompt(id: string): Promise<void> {
+    if (isBusy(this.status)) {
+      return;
+    }
+    const item = this.timeline.find(
+      (candidate) => candidate.type === "user" && candidate.id === id,
+    );
+    if (item?.type !== "user") {
+      throw new Error("That prompt is no longer available to retry.");
+    }
+    await this.sendPrompt(item.text, item.references ?? []);
+  }
+
+  private async editPrompt(
+    id: string,
+    rawPrompt: string,
+    references: readonly ChatReference[],
+  ): Promise<void> {
+    if (isBusy(this.status)) {
+      return;
+    }
+    const prompt = rawPrompt.trim();
+    if (prompt.length === 0 && references.length === 0) {
+      return;
+    }
+    this.requireTrustedWorkspace();
+    this.validateAttachmentReferences(references);
+    const targetIndex = this.timeline.findIndex(
+      (item) => item.type === "user" && item.id === id,
+    );
+    if (targetIndex < 0 || !this.changes.hasCheckpoint(id)) {
+      throw new Error("That prompt is no longer available to edit.");
+    }
+    const sessionId = this.sessionId;
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (
+      sessionId === undefined ||
+      workspacePath === undefined ||
+      this.sessionRewind === undefined
+    ) {
+      throw new Error("The current Qwen session cannot be rewound.");
+    }
+    const previousStatus = this.status;
+    this.setStatus("restoring");
+    try {
+      await this.changes.assertCheckpointRestorable(id);
+      const rollbackCheckpointId = `edit-rollback:${randomUUID()}`;
+      await this.changes.captureCheckpoint(rollbackCheckpointId);
+      await this.changes.restoreCheckpoint(id);
+      const targetTurnIndex = countQwenUserTurns(
+        this.timeline.slice(0, targetIndex),
+      );
+      try {
+        await this.sessionRewind.rewind({
+          sessionId,
+          workspacePath,
+          targetTurnIndex,
+        });
+      } catch (error) {
+        try {
+          await this.changes.restoreCheckpoint(rollbackCheckpointId);
+        } catch (rollbackError) {
+          this.logger.error(
+            "Unable to recover files after a failed Qwen conversation rewind.",
+            rollbackError,
+          );
+          throw new Error(
+            `Qwen could not rewind the conversation, and some files could not be returned to their newer state: ${toErrorMessage(error)}`,
+          );
+        } finally {
+          this.changes.discardCheckpoints([rollbackCheckpointId]);
+        }
+        throw error;
+      }
+      this.changes.discardCheckpoints([rollbackCheckpointId]);
+
+      const removedUserIds = this.timeline
+        .slice(targetIndex)
+        .filter((item) => item.type === "user")
+        .map((item) => item.id);
+      this.timeline.splice(targetIndex);
+      this.todos = (this.todoCheckpoints.get(id) ?? []).map((todo) => ({
+        ...todo,
+      }));
+      this.contextUsage = undefined;
+      this.contextSessionId = undefined;
+      this.changes.discardCheckpoints(removedUserIds);
+      for (const userId of removedUserIds) {
+        this.todoCheckpoints.delete(userId);
+      }
+      this.emitChange();
+      this.setStatus(previousStatus);
+      await this.sendPrompt(prompt, references);
+    } finally {
+      if (this.status === "restoring") {
+        this.setStatus(previousStatus);
+      }
+    }
+  }
+
+  private async restorePromptFiles(id: string): Promise<void> {
+    if (isBusy(this.status) || !this.changes.hasChangesSinceCheckpoint(id)) {
+      return;
+    }
+    this.requireTrustedWorkspace();
+    const confirmation = await vscode.window.showWarningMessage(
+      "Restore every safely tracked agent file to its state before this prompt? Conversation history will remain unchanged.",
+      { modal: true },
+      "Restore files",
+    );
+    if (confirmation !== "Restore files") {
+      return;
+    }
+    const previousStatus = this.status;
+    this.setStatus("restoring");
+    try {
+      await this.changes.restoreCheckpoint(id);
+    } finally {
+      this.setStatus(previousStatus);
+    }
+  }
+
+  private validateAttachmentReferences(
+    references: readonly ChatReference[],
+  ): void {
+    for (const reference of references) {
+      if (
+        reference.source === "attachment" &&
+        this.attachments?.isManaged(reference) !== true
+      ) {
+        throw new Error("That attachment is no longer available.");
+      }
     }
   }
 
@@ -572,6 +808,7 @@ export class ChatController implements vscode.Disposable {
         if (this.sessionId !== event.sessionId) {
           this.contextUsage = undefined;
           this.contextSessionId = undefined;
+          this.todos = [];
         }
         this.sessionId = event.sessionId;
         this.setStatus("running");
@@ -661,6 +898,11 @@ export class ChatController implements vscode.Disposable {
           state: event.success ? "succeeded" : "failed",
           ...(event.output === undefined ? {} : { output: event.output }),
         });
+        break;
+      case "todos.updated":
+        if (event.parentId === undefined) {
+          this.todos = event.todos.map((todo) => ({ ...todo }));
+        }
         break;
       case "context.usage.updated":
         if (event.sessionId === this.sessionId) {
@@ -917,7 +1159,8 @@ function isBusy(status: ExecutionStatus): boolean {
     status === "connecting" ||
     status === "running" ||
     status === "waitingForPermission" ||
-    status === "cancelling"
+    status === "cancelling" ||
+    status === "restoring"
   );
 }
 
@@ -936,6 +1179,16 @@ function findLastTimelineIndex(
     }
   }
   return -1;
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+function countQwenUserTurns(timeline: readonly TimelineItem[]): number {
+  return timeline.filter(
+    (item) => item.type === "user" || item.type === "followUp",
+  ).length;
 }
 
 interface HistoryPickerItem extends vscode.QuickPickItem {

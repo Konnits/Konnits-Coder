@@ -15,9 +15,28 @@ interface ActiveSnapshot {
   readonly existingChangeId?: string;
 }
 
+interface CheckpointFileState {
+  readonly uri: string;
+  readonly content: string | null;
+  readonly hash: string | null;
+}
+
+interface ChangeCheckpoint {
+  readonly changes: readonly ProposedFileChange[];
+  readonly files: ReadonlyMap<string, CheckpointFileState>;
+}
+
+interface RestoreEntry {
+  readonly uri: string;
+  readonly currentContent: string | null;
+  readonly targetContent: string | null;
+}
+
 export class ChangeManager {
   private readonly changes = new Map<string, ProposedFileChange>();
   private readonly active = new Map<string, ActiveSnapshot>();
+  private readonly checkpoints = new Map<string, ChangeCheckpoint>();
+  private readonly expectedFileHashes = new Map<string, string | null>();
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly fileSystem: FileSystemPort) {}
@@ -30,6 +49,101 @@ export class ChangeManager {
 
   get(id: string): ProposedFileChange | undefined {
     return this.changes.get(id);
+  }
+
+  async captureCheckpoint(id: string): Promise<void> {
+    const changes = this.list().map(cloneChange);
+    const files = new Map<string, CheckpointFileState>();
+    for (const uri of new Set(changes.map((change) => change.uri))) {
+      const content = await this.fileSystem.readText(uri);
+      files.set(uri, { uri, content, hash: hashContent(content) });
+    }
+    this.checkpoints.set(id, { changes, files });
+    this.emitChange();
+  }
+
+  hasCheckpoint(id: string): boolean {
+    return this.checkpoints.has(id);
+  }
+
+  hasChangesSinceCheckpoint(id: string): boolean {
+    const checkpoint = this.checkpoints.get(id);
+    if (checkpoint === undefined) {
+      return false;
+    }
+    for (const uri of this.changedUris(checkpoint)) {
+      if (this.targetHash(checkpoint, uri) !== this.currentExpectedHash(uri)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async assertCheckpointRestorable(id: string): Promise<void> {
+    await this.createRestorePlan(this.requireCheckpoint(id));
+  }
+
+  async restoreCheckpoint(id: string): Promise<void> {
+    const checkpoint = this.requireCheckpoint(id);
+    const plan = await this.createRestorePlan(checkpoint);
+    const applied: RestoreEntry[] = [];
+    try {
+      for (const entry of plan) {
+        if (entry.currentContent === entry.targetContent) {
+          continue;
+        }
+        await this.writeContent(entry.uri, entry.targetContent);
+        const restored = await this.fileSystem.readText(entry.uri);
+        if (!contentMatches(restored, hashContent(entry.targetContent))) {
+          throw new Error(
+            `The checkpoint content for ${entry.uri} could not be verified.`,
+          );
+        }
+        applied.push(entry);
+      }
+    } catch (error) {
+      const rollbackFailures: string[] = [];
+      for (const entry of applied.reverse()) {
+        try {
+          await this.writeContent(entry.uri, entry.currentContent);
+          const rolledBack = await this.fileSystem.readText(entry.uri);
+          if (!contentMatches(rolledBack, hashContent(entry.currentContent))) {
+            rollbackFailures.push(entry.uri);
+          }
+        } catch {
+          rollbackFailures.push(entry.uri);
+        }
+      }
+      if (rollbackFailures.length > 0) {
+        this.markUrisConflicted(
+          rollbackFailures,
+          "Checkpoint restoration failed and the previous file state could not be fully recovered.",
+        );
+      }
+      throw error;
+    }
+
+    this.active.clear();
+    this.changes.clear();
+    for (const change of checkpoint.changes) {
+      this.changes.set(change.id, cloneChange(change));
+    }
+    for (const entry of plan) {
+      this.expectedFileHashes.set(entry.uri, hashContent(entry.targetContent));
+    }
+    this.emitChange();
+  }
+
+  discardCheckpoints(ids: readonly string[]): void {
+    for (const id of ids) {
+      this.checkpoints.delete(id);
+    }
+    this.emitChange();
+  }
+
+  clearCheckpoints(): void {
+    this.checkpoints.clear();
+    this.emitChange();
   }
 
   async begin(uri: string): Promise<void> {
@@ -87,6 +201,7 @@ export class ChangeManager {
         updatedAt: Date.now(),
       };
       this.changes.set(updated.id, updated);
+      this.expectedFileHashes.set(uri, updated.proposedHash);
       this.emitChange();
       return updated;
     }
@@ -111,6 +226,7 @@ export class ChangeManager {
       updatedAt: now,
     };
     this.changes.set(change.id, change);
+    this.expectedFileHashes.set(uri, change.proposedHash);
     this.emitChange();
     return change;
   }
@@ -144,6 +260,7 @@ export class ChangeManager {
         "The original content could not be verified after restoration.",
       );
     }
+    this.expectedFileHashes.set(change.uri, change.originalHash);
     return this.updateStatus(change, "rejected");
   }
 
@@ -252,9 +369,127 @@ export class ChangeManager {
     return results;
   }
 
+  private requireCheckpoint(id: string): ChangeCheckpoint {
+    const checkpoint = this.checkpoints.get(id);
+    if (checkpoint === undefined) {
+      throw new Error(
+        "That prompt does not have a restorable file checkpoint.",
+      );
+    }
+    return checkpoint;
+  }
+
+  private changedUris(checkpoint: ChangeCheckpoint): ReadonlySet<string> {
+    return new Set([
+      ...checkpoint.files.keys(),
+      ...[...this.changes.values()].map((change) => change.uri),
+    ]);
+  }
+
+  private targetHash(checkpoint: ChangeCheckpoint, uri: string): string | null {
+    const captured = checkpoint.files.get(uri);
+    if (captured !== undefined) {
+      return captured.hash;
+    }
+    return this.firstChangeForUri(uri)?.originalHash ?? null;
+  }
+
+  private currentExpectedHash(uri: string): string | null {
+    if (this.expectedFileHashes.has(uri)) {
+      return this.expectedFileHashes.get(uri) ?? null;
+    }
+    const current = this.lastChangeForUri(uri);
+    if (current === undefined) {
+      return null;
+    }
+    return current.status === "rejected"
+      ? current.originalHash
+      : current.proposedHash;
+  }
+
+  private async createRestorePlan(
+    checkpoint: ChangeCheckpoint,
+  ): Promise<readonly RestoreEntry[]> {
+    const entries: RestoreEntry[] = [];
+    for (const uri of this.changedUris(checkpoint)) {
+      if (this.fileSystem.isDirty(uri)) {
+        throw new Error(
+          `Refusing to restore ${uri} because it has unsaved editor changes.`,
+        );
+      }
+      const currentChange = this.lastChangeForUri(uri);
+      if (currentChange?.status === "conflicted") {
+        throw new Error(
+          `Refusing to restore ${uri} because its agent change is conflicted.`,
+        );
+      }
+      const currentContent = await this.fileSystem.readText(uri);
+      const expectedHash = this.currentExpectedHash(uri);
+      if (
+        (currentChange !== undefined || this.expectedFileHashes.has(uri)) &&
+        !contentMatches(currentContent, expectedHash)
+      ) {
+        this.markUrisConflicted(
+          [uri],
+          "The file changed independently after the agent proposal and was not restored.",
+        );
+        throw new Error(
+          `Refusing to restore ${uri} because it contains independent changes.`,
+        );
+      }
+      const captured = checkpoint.files.get(uri);
+      const targetContent =
+        captured === undefined
+          ? (this.firstChangeForUri(uri)?.originalContent ?? null)
+          : captured.content;
+      entries.push({ uri, currentContent, targetContent });
+    }
+    return entries;
+  }
+
+  private firstChangeForUri(uri: string): ProposedFileChange | undefined {
+    return this.list().find((change) => change.uri === uri);
+  }
+
+  private lastChangeForUri(uri: string): ProposedFileChange | undefined {
+    return this.list()
+      .filter((change) => change.uri === uri)
+      .at(-1);
+  }
+
+  private async writeContent(
+    uri: string,
+    content: string | null,
+  ): Promise<void> {
+    if (content === null) {
+      await this.fileSystem.deleteFile(uri);
+    } else {
+      await this.fileSystem.writeText(uri, content);
+    }
+  }
+
+  private markUrisConflicted(uris: readonly string[], reason: string): void {
+    const targets = new Set(uris);
+    for (const [id, change] of this.changes) {
+      if (targets.has(change.uri)) {
+        this.changes.set(id, {
+          ...change,
+          status: "conflicted",
+          conflictReason: reason,
+          updatedAt: Date.now(),
+        });
+      }
+    }
+    this.emitChange();
+  }
+
   private emitChange(): void {
     for (const listener of this.listeners) {
       listener();
     }
   }
+}
+
+function cloneChange(change: ProposedFileChange): ProposedFileChange {
+  return { ...change };
 }

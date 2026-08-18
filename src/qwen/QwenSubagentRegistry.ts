@@ -125,7 +125,7 @@ export async function resolveQwenSubagents(
     runtimeAgentNames: "unavailable",
   };
 
-  let daemon: DaemonProcess | undefined;
+  let daemon: QwenDaemonProcess | undefined;
   let client: DaemonClient | undefined;
   try {
     daemon = await startQwenDaemon(runtime.cliExecutable, absoluteWorkspace, {
@@ -254,7 +254,7 @@ async function inspectAgentDirectory(
   }
 }
 
-interface DaemonProcess {
+export interface QwenDaemonProcess {
   readonly baseUrl: string;
   close(): Promise<void>;
 }
@@ -267,11 +267,11 @@ interface DaemonLaunch {
   readonly windowsVerbatimArguments?: boolean;
 }
 
-async function startQwenDaemon(
+export async function startQwenDaemon(
   executable: string,
   workspacePath: string,
   options: QwenSubagentResolverOptions,
-): Promise<DaemonProcess> {
+): Promise<QwenDaemonProcess> {
   const launch = resolveQwenDaemonLaunch(executable, options);
   const daemonArgs = [
     "serve",
