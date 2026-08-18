@@ -85,7 +85,7 @@ describe("VsCodeFileSystem workspace target resolution", () => {
     expect(vscodeMock.updateWorkspaceFolders).not.toHaveBeenCalled();
   });
 
-  it("does not authorize or create an external folder when the user declines", async () => {
+  it("does not authorize or create anything when the user declines external access", async () => {
     vscodeMock.showWarningMessage.mockResolvedValue(undefined);
     const fileSystem = new VsCodeFileSystem();
 
@@ -93,13 +93,43 @@ describe("VsCodeFileSystem workspace target resolution", () => {
       fileSystem.resolveOrRequestWorkspaceTarget(
         "C:\\Users\\geral\\.ensemble-agent\\config.toml",
       ),
-    ).rejects.toThrow("The user declined to add the external folder");
+    ).rejects.toThrow("The user declined external edit access");
     expect(vscodeMock.createDirectory).not.toHaveBeenCalled();
     expect(vscodeMock.updateWorkspaceFolders).not.toHaveBeenCalled();
   });
 
+  it("allows only the exact external file for the current tracked edit", async () => {
+    vscodeMock.showWarningMessage.mockResolvedValue("Allow This File Once");
+    const fileSystem = new VsCodeFileSystem();
+    const target = "C:\\Users\\geral\\.ensemble-agent\\config.toml";
+
+    const uri = await fileSystem.resolveOrRequestWorkspaceTarget(target);
+
+    expect(uri.fsPath).toBe(target);
+    const promptCall = vscodeMock.showWarningMessage.mock
+      .calls[0] as unknown as [
+      string,
+      { readonly detail: string },
+      string,
+      string,
+    ];
+    expect(promptCall[0]).toContain("outside the open workspace");
+    expect(promptCall[1].detail).toContain(target);
+    expect(promptCall.slice(2)).toEqual([
+      "Allow This File Once",
+      "Add Parent Folder to Workspace",
+    ]);
+    expect(vscodeMock.createDirectory).not.toHaveBeenCalled();
+    expect(vscodeMock.updateWorkspaceFolders).not.toHaveBeenCalled();
+    expect(() => fileSystem.resolveWorkspaceTarget(target)).toThrow(
+      "outside the open workspace",
+    );
+  });
+
   it("adds only the external file parent and resolves it once VS Code reports the folder", async () => {
-    vscodeMock.showWarningMessage.mockResolvedValue("Add Folder to Workspace");
+    vscodeMock.showWarningMessage.mockResolvedValue(
+      "Add Parent Folder to Workspace",
+    );
     const fileSystem = new VsCodeFileSystem();
     const target = "C:\\Users\\geral\\.ensemble-agent\\config.toml";
 
@@ -129,7 +159,9 @@ describe("VsCodeFileSystem workspace target resolution", () => {
   });
 
   it("does not retain authorization when VS Code rejects the folder update", async () => {
-    vscodeMock.showWarningMessage.mockResolvedValue("Add Folder to Workspace");
+    vscodeMock.showWarningMessage.mockResolvedValue(
+      "Add Parent Folder to Workspace",
+    );
     vscodeMock.updateWorkspaceFolders.mockReturnValue(false);
     const fileSystem = new VsCodeFileSystem();
     const target = "C:\\Users\\geral\\.ensemble-agent\\config.toml";
@@ -143,7 +175,9 @@ describe("VsCodeFileSystem workspace target resolution", () => {
   });
 
   it("does not request a workspace update when the external folder cannot be created", async () => {
-    vscodeMock.showWarningMessage.mockResolvedValue("Add Folder to Workspace");
+    vscodeMock.showWarningMessage.mockResolvedValue(
+      "Add Parent Folder to Workspace",
+    );
     vscodeMock.createDirectory.mockRejectedValue(new Error("Access denied"));
     const fileSystem = new VsCodeFileSystem();
 
@@ -155,12 +189,19 @@ describe("VsCodeFileSystem workspace target resolution", () => {
     expect(vscodeMock.updateWorkspaceFolders).not.toHaveBeenCalled();
   });
 
-  it("refuses to add an entire filesystem root", async () => {
+  it("offers only one-file access when the parent is a filesystem root", async () => {
+    vscodeMock.showWarningMessage.mockResolvedValue("Allow This File Once");
     const fileSystem = new VsCodeFileSystem();
 
-    await expect(
-      fileSystem.resolveOrRequestWorkspaceTarget("C:\\config.toml"),
-    ).rejects.toThrow("Refusing to add a filesystem root");
-    expect(vscodeMock.showWarningMessage).not.toHaveBeenCalled();
+    const uri =
+      await fileSystem.resolveOrRequestWorkspaceTarget("C:\\config.toml");
+
+    expect(uri.fsPath).toBe("C:\\config.toml");
+    expect(vscodeMock.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining("outside the open workspace"),
+      expect.any(Object),
+      "Allow This File Once",
+    );
+    expect(vscodeMock.updateWorkspaceFolders).not.toHaveBeenCalled();
   });
 });

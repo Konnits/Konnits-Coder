@@ -95,6 +95,58 @@ describe("QwenCodeAgentClient", () => {
     }
   });
 
+  it("denies an external edit when its scoped authorization is declined", async () => {
+    const target = "C:\\Users\\test\\.ensemble-agent\\config.toml";
+    const requests: Parameters<QwenQueryFactory>[0][] = [];
+    const permissions = new PermissionManager();
+    const beforeEdit = vi.fn(async () => {
+      throw new Error(`The user declined external edit access for: ${target}`);
+    });
+    const client = new QwenCodeAgentClient(
+      () => ({ debug: false }),
+      permissions,
+      {
+        beforeEdit,
+        afterEdit: vi.fn(async () => undefined),
+        completeAll: vi.fn(async () => undefined),
+      },
+      {
+        debug: vi.fn<(message: string) => void>(),
+        info: vi.fn<(message: string) => void>(),
+        error: vi.fn<(message: string, error?: unknown) => void>(),
+      },
+      vi.fn(((request) => {
+        requests.push(request);
+        return successfulQuery();
+      }) as QwenQueryFactory),
+    );
+
+    await client.run(runRequest());
+
+    const candidate = requests[0]?.options?.canUseTool as unknown;
+    if (!isToolPermissionCallback(candidate)) {
+      throw new Error("Expected a Qwen tool permission callback.");
+    }
+    const decision = candidate(
+      "write_file",
+      { file_path: target },
+      { signal: new AbortController().signal },
+    );
+    const permission = permissions.list()[0];
+    if (permission === undefined) {
+      throw new Error("Expected a pending external edit permission.");
+    }
+    permissions.resolve(permission.id, "allow");
+
+    const result = await decision;
+    expect(isDeniedToolPermissionDecision(result)).toBe(true);
+    if (!isDeniedToolPermissionDecision(result)) {
+      throw new Error("Expected the external edit to be denied.");
+    }
+    expect(result.message).toContain("declined external edit access");
+    expect(beforeEdit).toHaveBeenCalledWith(target);
+  });
+
   it("keeps the exact user prompt separate from executable configuration", async () => {
     const requests: Parameters<QwenQueryFactory>[0][] = [];
     const queryFactory = vi.fn(((request) => {

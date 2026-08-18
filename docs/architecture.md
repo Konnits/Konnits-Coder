@@ -234,10 +234,11 @@ The application state explicitly distinguishes `idle`, `connecting`, `connected`
 - Webview messages are runtime validated.
 - Attachment references must match records issued by `ChatAttachmentService`; copied payloads have bounded size/count and are deleted best-effort when the service is disposed.
 - SDK stderr is sent to a dedicated output channel and never includes environment dumps. Debug output is opt-in.
-- File targets are resolved workspace URIs. An external dedicated-edit target
-  remains blocked unless the user confirms adding its immediate parent as a
-  workspace folder; filesystem roots and silent broad-parent inclusion are
-  refused.
+- File targets are resolved URIs. An external dedicated-edit target remains
+  blocked unless the user authorizes that exact file for the current edit or
+  confirms adding its immediate parent as a workspace folder. One-file access
+  is not retained, while filesystem roots and silent broad-parent inclusion are
+  refused for workspace additions.
 - Permission requests default to denial on timeout, cancellation, disposal, or malformed input.
 - Full access is ineffective without per-workspace acknowledgement. Once enabled, Qwen bypasses `canUseTool`, so the modal warns that change capture and restoration cannot be guaranteed for that turn.
 - API tokens are accepted only by a native password input, stored in Qwen's `.env` through a generated `envKey`, and excluded from webview contracts and diagnostics.

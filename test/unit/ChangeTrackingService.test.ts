@@ -4,7 +4,7 @@ import type { ChangeManager } from "../../src/changes/ChangeManager.js";
 import { ChangeTrackingService } from "../../src/changes/ChangeTrackingService.js";
 
 describe("ChangeTrackingService", () => {
-  it("requests workspace inclusion before capturing an edit snapshot", async () => {
+  it("resolves external authorization before capturing an edit snapshot", async () => {
     const begin = vi.fn(async () => undefined);
     const complete = vi.fn(async () => undefined);
     const resolvedUri = {

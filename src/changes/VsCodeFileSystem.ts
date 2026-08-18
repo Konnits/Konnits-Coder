@@ -2,7 +2,8 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { FileSystemPort } from "./ProposedFileChange.js";
 
-const ADD_WORKSPACE_FOLDER_ACTION = "Add Folder to Workspace";
+const ALLOW_EXTERNAL_FILE_ACTION = "Allow This File Once";
+const ADD_WORKSPACE_FOLDER_ACTION = "Add Parent Folder to Workspace";
 
 class OutsideWorkspaceError extends Error {
   constructor(
@@ -78,25 +79,32 @@ export class VsCodeFileSystem implements FileSystemPort {
         throw error;
       }
       const folderPath = path.dirname(error.candidatePath);
-      if (path.parse(folderPath).root === folderPath) {
-        throw new Error(
-          `Refusing to add a filesystem root for external edit access: ${folderPath}`,
-        );
-      }
+      const canAddFolder = path.parse(folderPath).root !== folderPath;
+      const actions = canAddFolder
+        ? [ALLOW_EXTERNAL_FILE_ACTION, ADD_WORKSPACE_FOLDER_ACTION]
+        : [ALLOW_EXTERNAL_FILE_ACTION];
       const selected = await vscode.window.showWarningMessage(
         `The requested file is outside the open workspace: ${error.rawPath}`,
         {
           modal: true,
           detail:
-            `To edit this file with Changed Files review, Konnits Coder must add its parent folder to the workspace.\n\n` +
-            `${folderPath}\n\n` +
-            "The folder will be created if needed. No broader parent folder will be added.",
+            "You can allow this exact file for the current edit without changing the workspace" +
+            (canAddFolder
+              ? ", or add its immediate parent folder to the workspace"
+              : "") +
+            `. Both choices retain Changed Files review.\n\nFile:\n${error.candidatePath}` +
+            (canAddFolder
+              ? `\n\nParent folder:\n${folderPath}\n\nThe folder will be created if needed. No broader parent folder will be added.`
+              : ""),
         },
-        ADD_WORKSPACE_FOLDER_ACTION,
+        ...actions,
       );
-      if (selected !== ADD_WORKSPACE_FOLDER_ACTION) {
+      if (selected === ALLOW_EXTERNAL_FILE_ACTION) {
+        return vscode.Uri.file(error.candidatePath);
+      }
+      if (selected !== ADD_WORKSPACE_FOLDER_ACTION || !canAddFolder) {
         throw new Error(
-          `The user declined to add the external folder to the workspace: ${folderPath}`,
+          `The user declined external edit access for: ${error.candidatePath}`,
         );
       }
 

@@ -15,7 +15,7 @@
 - Render submitted user prompts and active-turn follow-ups through the same safe GitHub Flavored Markdown path as assistant messages.
 - Keep tracked file modifications expanded and visible, add an explicit Todos clear action, and clear Todo state consistently when starting or restoring sessions.
 - Time each Thinking interval independently so tool or message boundaries freeze the previous duration and later thoughts restart from zero.
-- Offer to add the exact parent directory of an external edit target to the VS Code workspace, preserving Changed Files review while refusing silent or filesystem-root authorization.
+- Prompt for external edit scope: authorize the exact file once or add its immediate parent to the VS Code workspace, preserving Changed Files review without silent or broad authorization.
 
 ## 0.3.0
 
