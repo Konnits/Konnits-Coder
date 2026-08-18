@@ -131,6 +131,21 @@ describe("QwenCodeAgentClient", () => {
     expect(requests[0]?.options?.permissionMode).toBe("plan");
   });
 
+  it("passes the acknowledged full-access mode to Qwen", async () => {
+    const requests: Parameters<QwenQueryFactory>[0][] = [];
+    const client = createClient(
+      vi.fn(((request) => {
+        requests.push(request);
+        return successfulQuery();
+      }) as QwenQueryFactory),
+      { permissionMode: "yolo" },
+    );
+
+    await client.run(runRequest());
+
+    expect(requests[0]?.options?.permissionMode).toBe("yolo");
+  });
+
   it("denies image reads by default before Qwen can add them to the model input", async () => {
     const options: QueryOptions[] = [];
     const client = createClient(
@@ -620,7 +635,7 @@ function createClient(
     readonly executablePath?: string;
     readonly allowImageInput?: boolean;
     readonly streamIdleTimeoutMs?: number;
-    readonly permissionMode?: "default" | "plan";
+    readonly permissionMode?: "default" | "plan" | "yolo";
   } = {},
   subagentResolver?: QwenSubagentResolver,
 ): QwenCodeAgentClient {

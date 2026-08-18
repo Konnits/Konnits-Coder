@@ -14,6 +14,7 @@ import type { VsCodeFileSystem } from "../../src/changes/VsCodeFileSystem.js";
 import type { Logger } from "../../src/logging/Logger.js";
 import type { ModelManagement } from "../../src/models/ModelTypes.js";
 import type { PermissionManager } from "../../src/permissions/PermissionManager.js";
+import type { AgentPermissionModeManagement } from "../../src/permissions/AgentPermissionModeService.js";
 import type { QwenSessionManager } from "../../src/qwen/QwenSessionManager.js";
 import { KonnitsCommandRouter } from "../../src/commands/KonnitsCommandRouter.js";
 import { registerKonnitsCommands } from "../../src/commands/KonnitsCommands.js";
@@ -718,6 +719,34 @@ describe("ChatController terminal states", () => {
     );
   });
 
+  it("delegates permission selection and exposes the effective mode", async () => {
+    const select = vi.fn(async () => undefined);
+    const permissionModes = {
+      current: () => "yolo",
+      select,
+      reconcile: vi.fn(async () => undefined),
+      onDidChange: (listener: () => void) => {
+        void listener;
+        return { dispose: () => undefined };
+      },
+    } satisfies AgentPermissionModeManagement;
+    const { controller } = await createController(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      undefined,
+      permissionModes,
+    );
+
+    expect(controller.getState().permissionMode).toBe("yolo");
+    controller.handleMessage({ type: "openPermissionSettings" });
+
+    await vi.waitFor(() => expect(select).toHaveBeenCalledTimes(1));
+  });
+
   it("adds the controlled attachment directory to the Qwen workspace context", async () => {
     const attachment: ChatReference = {
       id: "file:///C:/attachments/image.png",
@@ -1080,6 +1109,7 @@ async function createController(
   proposedChanges: readonly ProposedFileChange[] = [],
   attachments?: ChatAttachmentAuthorization,
   sessionRewind?: SessionRewind,
+  permissionModes?: AgentPermissionModeManagement,
 ) {
   const { ChatController } = await import("../../src/chat/ChatController.js");
   const agent = new FakeAgentClient();
@@ -1139,6 +1169,7 @@ async function createController(
     commands,
     attachments,
     sessionRewind,
+    permissionModes,
   );
   return {
     controller,

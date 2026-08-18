@@ -32,7 +32,7 @@ describe("configuration parsing", () => {
       { debug: false, permissionMode: "plan" },
     );
     expect(parseConfigurationValues("", false, false, 120_000, "yolo")).toEqual(
-      { debug: false },
+      { debug: false, permissionMode: "yolo" },
     );
   });
 });
