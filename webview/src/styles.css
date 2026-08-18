@@ -271,6 +271,16 @@ button.danger {
   scrollbar-gutter: stable;
 }
 
+.chat-bottom-dock {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: min(45vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  background: var(--vscode-sideBar-background);
+}
+
 .empty-state {
   max-width: 320px;
   margin: 22vh auto 0;
@@ -797,7 +807,7 @@ pre {
 .work-summary-panels {
   display: grid;
   gap: 8px;
-  padding: 0 12px 12px;
+  padding: 8px 10px 0;
 }
 
 .collapsible-panel {

@@ -31,4 +31,20 @@ describe("ChatScrollRegion", () => {
 
     expect(html).not.toContain("jump-latest");
   });
+
+  it("renders work summaries in a dock outside the scrolling content", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChatScrollRegion, {
+        contentRef: { current: null },
+        following: true,
+        onJumpToLatest: vi.fn(),
+        children: createElement("span", null, "Conversation"),
+        bottomDock: createElement("span", null, "Todos (0/6)"),
+      }),
+    );
+
+    expect(html).toContain(
+      '<div class="chat-body"><span>Conversation</span></div></div><div class="chat-bottom-dock"><span>Todos (0/6)</span></div>',
+    );
+  });
 });

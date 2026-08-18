@@ -452,6 +452,16 @@ export function App(): React.JSX.Element {
         contentRef={contentRef}
         following={following}
         onJumpToLatest={jumpToLatest}
+        bottomDock={
+          state.todos.length > 0 || state.changes.length > 0 ? (
+            <aside className="work-summary-panels" aria-label="Work summary">
+              {state.todos.length > 0 && <TodosPanel todos={state.todos} />}
+              {state.changes.length > 0 && (
+                <ChangedFilesPanel changes={state.changes} />
+              )}
+            </aside>
+          ) : undefined
+        }
       >
         {!state.trusted && (
           <section className="notice" role="alert">
@@ -513,15 +523,6 @@ export function App(): React.JSX.Element {
             />
           ))}
         </section>
-
-        {(state.todos.length > 0 || state.changes.length > 0) && (
-          <div className="work-summary-panels">
-            {state.todos.length > 0 && <TodosPanel todos={state.todos} />}
-            {state.changes.length > 0 && (
-              <ChangedFilesPanel changes={state.changes} />
-            )}
-          </div>
-        )}
       </ChatScrollRegion>
 
       <footer className="composer">
