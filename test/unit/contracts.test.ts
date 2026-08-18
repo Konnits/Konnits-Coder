@@ -49,6 +49,9 @@ describe("webview message validation", () => {
     expect(parseWebviewMessage({ type: "manageModels" })).toEqual({
       type: "manageModels",
     });
+    expect(parseWebviewMessage({ type: "clearTodos" })).toEqual({
+      type: "clearTodos",
+    });
     expect(parseWebviewMessage({ type: "retryPrompt", id: "user-1" })).toEqual({
       type: "retryPrompt",
       id: "user-1",

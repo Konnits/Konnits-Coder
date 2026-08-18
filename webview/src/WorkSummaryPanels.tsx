@@ -15,6 +15,17 @@ export function TodosPanel({
     <CollapsiblePanel
       title="Todos"
       count={`${String(completed)}/${String(todos.length)}`}
+      headerAction={
+        <button
+          type="button"
+          className="collapsible-panel-action"
+          title="Clear todos"
+          aria-label="Clear todos"
+          onClick={() => vscode.postMessage({ type: "clearTodos" })}
+        >
+          Clear
+        </button>
+      }
     >
       <ol className="todo-list">
         {todos.map((todo) => (
@@ -52,6 +63,7 @@ export function ChangedFilesPanel({
     <CollapsiblePanel
       title="Changed files"
       count={String(changes.length)}
+      alwaysExpanded
       {...(diffSummary === undefined ? {} : { meta: diffSummary })}
     >
       <div className="change-list">

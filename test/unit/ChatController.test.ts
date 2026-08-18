@@ -125,7 +125,6 @@ describe("ChatController terminal states", () => {
         type: "thinking",
         id: "active-thinking",
         complete: true,
-        cancelled: true,
       }),
     );
     expect(controller.getState().timeline).toContainEqual(
@@ -240,6 +239,85 @@ describe("ChatController terminal states", () => {
     expect(final).toMatchObject({ text: "Visible result" });
     expect(final?.type === "finalResponse" && final.text).not.toContain(
       "Private emitted reasoning",
+    );
+  });
+
+  it("freezes a thought at a tool boundary and resets the next thought timer", async () => {
+    const { controller, agent } = await createController();
+    agent.emit(startedEvent());
+    agent.emit({
+      type: "thinking.started",
+      thoughtId: "thought-before-edit",
+      timestamp: 1_000,
+    });
+    agent.emit({
+      type: "thinking.chunk",
+      thoughtId: "thought-before-edit",
+      text: "Plan the edit",
+      timestamp: 2_000,
+    });
+    agent.emit({
+      type: "tool.started",
+      callId: "edit-1",
+      toolName: "edit",
+      kind: "edit",
+      title: "Edit",
+      target: "C:\\workspace\\file.ts",
+      timestamp: 11_000,
+    });
+    agent.emit({
+      type: "thinking.started",
+      thoughtId: "thought-after-edit",
+      timestamp: 20_000,
+    });
+
+    const thoughts = controller
+      .getState()
+      .timeline.filter((item) => item.type === "thinking");
+    expect(thoughts).toEqual([
+      expect.objectContaining({
+        id: "thought-before-edit",
+        complete: true,
+        startedAt: 1_000,
+        durationMs: 10_000,
+      }),
+      expect.objectContaining({
+        id: "thought-after-edit",
+        complete: false,
+        startedAt: 20_000,
+      }),
+    ]);
+  });
+
+  it("does not reactivate a completed thought when a late chunk arrives", async () => {
+    const { controller, agent } = await createController();
+    agent.emit(startedEvent());
+    agent.emit({
+      type: "thinking.started",
+      thoughtId: "thought-1",
+      timestamp: 1_000,
+    });
+    agent.emit({
+      type: "thinking.completed",
+      thoughtId: "thought-1",
+      durationMs: 2_000,
+      timestamp: 3_000,
+    });
+    agent.emit({
+      type: "thinking.chunk",
+      thoughtId: "thought-1",
+      text: "Late text",
+      timestamp: 4_000,
+    });
+
+    expect(controller.getState().timeline).toContainEqual(
+      expect.objectContaining({
+        type: "thinking",
+        id: "thought-1",
+        text: "Late text",
+        complete: true,
+        durationMs: 2_000,
+      }),
     );
   });
 
@@ -390,6 +468,10 @@ describe("ChatController terminal states", () => {
       { id: "one", content: "Inspect", status: "completed" },
       { id: "two", content: "Implement", status: "in_progress" },
     ]);
+    let publishedClearedTodos = false;
+    const disposable = controller.onDidChange(() => {
+      publishedClearedTodos ||= controller.getState().todos.length === 0;
+    });
 
     agent.emit({
       type: "agent.cancelled",
@@ -399,6 +481,22 @@ describe("ChatController terminal states", () => {
     await controller.newSession();
 
     expect(controller.getState().todos).toEqual([]);
+    expect(publishedClearedTodos).toBe(true);
+    disposable.dispose();
+  });
+
+  it("clears todos on explicit webview request", async () => {
+    const { controller, agent } = await createController();
+    agent.emit(startedEvent());
+    agent.emit({
+      type: "todos.updated",
+      todos: [{ id: "one", content: "Inspect", status: "pending" }],
+      timestamp: Date.now(),
+    });
+
+    controller.handleMessage({ type: "clearTodos" });
+
+    await vi.waitFor(() => expect(controller.getState().todos).toEqual([]));
   });
 
   it("derives added, modified, and deleted badges from captured file existence", async () => {

@@ -821,8 +821,14 @@ pre {
   );
 }
 
+.collapsible-panel-header {
+  display: flex;
+  align-items: stretch;
+}
+
 .collapsible-panel-toggle {
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   min-height: 32px;
   display: grid;
   grid-template-columns: 12px minmax(0, 1fr) auto;
@@ -834,6 +840,31 @@ pre {
   color: var(--vscode-foreground);
   background: transparent;
   text-align: left;
+}
+
+.collapsible-panel-static-heading {
+  min-width: 0;
+  min-height: 32px;
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+  align-items: center;
+  padding: 6px 9px;
+}
+
+.collapsible-panel-action {
+  align-self: center;
+  margin-right: 5px;
+  padding: 3px 7px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font-size: 11px;
+}
+
+.collapsible-panel-action:hover:not(:disabled) {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground);
 }
 
 .collapsible-panel-toggle:hover:not(:disabled) {

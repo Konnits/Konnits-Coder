@@ -25,6 +25,7 @@ describe("work summary panels", () => {
     expect(html).toContain("Todos");
     expect(html).toContain("(1/2)");
     expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-label="Clear todos"');
     expect(html).toContain("Implement");
   });
 
@@ -51,5 +52,8 @@ describe("work summary panels", () => {
     expect(html).toContain("src/App.tsx");
     expect(html).toContain("Keep all");
     expect(html).toContain("Undo all");
+    expect(html).toContain("collapsible-panel is-expanded");
+    expect(html).not.toContain("collapsible-panel-chevron");
+    expect(html).not.toContain("hidden");
   });
 });

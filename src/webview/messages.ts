@@ -214,6 +214,7 @@ export type WebviewToExtensionMessage =
     }
   | { readonly type: "cancel" }
   | { readonly type: "newSession" }
+  | { readonly type: "clearTodos" }
   | { readonly type: "manageModels" }
   | { readonly type: "addModel" }
   | { readonly type: "openModelSettings" }
@@ -257,6 +258,7 @@ export function parseWebviewMessage(
     case "connect":
     case "cancel":
     case "newSession":
+    case "clearTodos":
     case "manageModels":
     case "addModel":
     case "openModelSettings":

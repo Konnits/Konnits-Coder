@@ -28,6 +28,35 @@ describe("AgentTurn", () => {
     expect(html).not.toContain("disabled");
   });
 
+  it("renders the submitted user prompt as safe Markdown", () => {
+    const html = renderToStaticMarkup(
+      createElement(AgentTurn, {
+        turn: {
+          type: "turn",
+          id: "user-markdown",
+          user: {
+            type: "user",
+            id: "user-markdown",
+            text: "**Important**\n\n- first\n- second",
+          },
+          activities: [],
+          segments: [],
+          errors: [],
+          status: "completed",
+        },
+        canRetry: true,
+        onRetry: vi.fn(),
+        onEdit: vi.fn(),
+        onRestoreFiles: vi.fn(),
+        onOpenLink: vi.fn(),
+      }),
+    );
+
+    expect(html).toContain("<strong>Important</strong>");
+    expect(html).toContain("<li>first</li>");
+    expect(html).not.toContain("**Important**");
+  });
+
   it("shows edit and file restore actions only when the prompt exposes checkpoints", () => {
     const html = renderToStaticMarkup(
       createElement(AgentTurn, {

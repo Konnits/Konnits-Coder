@@ -178,12 +178,16 @@ export class ChatController implements vscode.Disposable {
     this.sessionId = session.id;
     this.contextUsage = undefined;
     this.contextSessionId = undefined;
-    this.todos = [];
-    this.todoCheckpoints.clear();
+    this.clearTodoState();
     this.timeline.length = 0;
     this.changes.clearCheckpoints();
     this.changes.clearSettled();
     this.setStatus(this.connected ? "connected" : "idle");
+  }
+
+  clearTodos(): void {
+    this.clearTodoState();
+    this.emitChange();
   }
 
   async openHistory(): Promise<void> {
@@ -315,8 +319,7 @@ export class ChatController implements vscode.Disposable {
       const selection = await this.sessions.resumeExisting(session.sessionId);
       this.sessionId = selection.session.id;
       this.timeline.splice(0, this.timeline.length, ...transcript);
-      this.todos = [];
-      this.todoCheckpoints.clear();
+      this.clearTodoState();
       this.changes.clearCheckpoints();
       this.contextUsage = result.contextUsage;
       this.contextSessionId =
@@ -462,6 +465,9 @@ export class ChatController implements vscode.Disposable {
           break;
         case "newSession":
           await this.newSession();
+          break;
+        case "clearTodos":
+          this.clearTodos();
           break;
         case "manageModels":
           await this.manageModels();
@@ -818,12 +824,13 @@ export class ChatController implements vscode.Disposable {
         if (this.sessionId !== event.sessionId) {
           this.contextUsage = undefined;
           this.contextSessionId = undefined;
-          this.todos = [];
+          this.clearTodoState();
         }
         this.sessionId = event.sessionId;
         this.setStatus("running");
         return;
       case "assistant.message.started":
+        this.completeActiveThinking(event.timestamp, event.parentId);
         if (
           !this.timeline.some(
             (item) => item.type === "assistant" && item.id === event.messageId,
@@ -851,6 +858,11 @@ export class ChatController implements vscode.Disposable {
         this.updateAssistant(event.messageId, (text) => text, true);
         break;
       case "thinking.started":
+        this.completeActiveThinking(
+          event.timestamp,
+          event.parentId,
+          event.thoughtId,
+        );
         if (
           !this.timeline.some(
             (item) => item.type === "thinking" && item.id === event.thoughtId,
@@ -884,6 +896,7 @@ export class ChatController implements vscode.Disposable {
         );
         break;
       case "tool.started":
+        this.completeActiveThinking(event.timestamp, event.parentId);
         this.timeline.push({
           type: "tool",
           id: event.callId,
@@ -1003,7 +1016,7 @@ export class ChatController implements vscode.Disposable {
       this.timeline[index] = {
         ...item,
         text: update(item.text),
-        complete,
+        complete: item.complete || complete,
         ...(durationMs === undefined ? {} : { durationMs }),
       };
       return;
@@ -1016,6 +1029,33 @@ export class ChatController implements vscode.Disposable {
       startedAt: Date.now(),
       ...(durationMs === undefined ? {} : { durationMs }),
     });
+  }
+
+  private completeActiveThinking(
+    timestamp: number,
+    parentId: string | undefined,
+    exceptId?: string,
+  ): void {
+    for (const [index, item] of this.timeline.entries()) {
+      if (
+        item.type !== "thinking" ||
+        item.complete ||
+        item.id === exceptId ||
+        item.parentId !== parentId
+      ) {
+        continue;
+      }
+      this.timeline[index] = {
+        ...item,
+        complete: true,
+        durationMs: Math.max(0, timestamp - item.startedAt),
+      };
+    }
+  }
+
+  private clearTodoState(): void {
+    this.todos = [];
+    this.todoCheckpoints.clear();
   }
 
   private markActiveTurnCancelled(): void {

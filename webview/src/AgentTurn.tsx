@@ -79,7 +79,7 @@ export function AgentTurn({
               ))}
             </div>
           )}
-        <p>{turn.user.text}</p>
+        <MarkdownMessage source={turn.user.text} onOpenLink={onOpenLink} />
         <TokenCount count={turn.user.tokenCount} />
       </article>
       <div className="turn-responses">

@@ -455,10 +455,10 @@ export function App(): React.JSX.Element {
         bottomDock={
           state.todos.length > 0 || state.changes.length > 0 ? (
             <aside className="work-summary-panels" aria-label="Work summary">
-              {state.todos.length > 0 && <TodosPanel todos={state.todos} />}
               {state.changes.length > 0 && (
                 <ChangedFilesPanel changes={state.changes} />
               )}
+              {state.todos.length > 0 && <TodosPanel todos={state.todos} />}
             </aside>
           ) : undefined
         }
@@ -926,7 +926,7 @@ function StandaloneEntry({
       return (
         <article className="message user-message follow-up-message">
           <div className="eyebrow">You · Update</div>
-          <p>{item.text}</p>
+          <MarkdownMessage source={item.text} onOpenLink={onOpenLink} />
           <TokenCount count={item.tokenCount} />
         </article>
       );
